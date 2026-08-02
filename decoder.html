@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>naidesu-cardloader — 読み取り (Decoder)</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="js/card-format.js"></script>
+<style>
+  :root { --accent:#2563eb; --ok:#16a34a; --warn:#f59e0b; --bad:#dc2626; --bg:#0f172a; --card:#1e293b; --line:#334155; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { font-family: system-ui,-apple-system,"Segoe UI","Hiragino Sans",sans-serif;
+         margin:0; background:var(--bg); color:#e2e8f0; padding:12px; }
+  .wrap { max-width:900px; margin:0 auto; }
+  h1 { font-size:1.25rem; margin:.2em 0; }
+  .sub { color:#94a3b8; font-size:.82rem; margin-bottom:.8rem; }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:12px; }
+  input[type=file] { width:100%; padding:10px; border-radius:8px; border:1px solid var(--line); background:#0b1220; color:#e2e8f0; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  .row > * { flex:1; min-width:120px; }
+  button { cursor:pointer; border:0; border-radius:9px; padding:11px 12px; font-weight:600; color:#fff; background:var(--accent); width:100%; font-size:.95rem; }
+  button.ok { background:var(--ok); } button.warn{ background:var(--warn);} button.ghost{ background:#475569;}
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .status { font-size:.85rem; margin:8px 0; white-space:pre-line; }
+  .status.ok{color:#86efac;} .status.bad{color:#fca5a5;} .status.info{color:#93c5fd;}
+  .canvas-wrap { position:relative; overflow:auto; background:#000; border-radius:8px; touch-action:none; }
+  canvas#view { display:block; width:100%; height:auto; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:99px; font-size:.72rem; margin:2px; }
+  .pill.have{ background:#065f46; color:#d1fae5;} .pill.miss{ background:#7f1d1d; color:#fecaca;}
+  ul.pages{ list-style:none; padding:0; margin:6px 0; font-size:.82rem;}
+  ul.pages li{ padding:4px 0; border-bottom:1px solid var(--line);}
+  a.homelink{ color:#93c5fd; font-size:.85rem;}
+  .hint{ font-size:.75rem; color:#94a3b8; margin-top:6px;}
+  label.chk{ display:flex; align-items:center; gap:8px; font-size:.85rem; color:#cbd5e1;}
+</style>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22><text y=%2214%22 font-size=%2214%22>📇</text></svg>">
+</head>
+<body>
+<div class="wrap">
+  <h1>🔍 naidesu-cardloader — 読み取り</h1>
+  <div class="sub">
+    印刷したカードのスキャン画像(300dpi程度)/写真/PDF を読み込み、バイナリに復元します。
+    四隅の黒い■を自動検出 → ズレていれば赤い枠の角をドラッグして合わせます。
+    <a class="homelink" href="creator.html">→ 作成(Creator)へ</a>
+  </div>
+
+  <div class="panel">
+    <input type="file" id="file" accept="application/pdf,image/*">
+    <div class="hint" id="pdfPageHint" style="display:none;"></div>
+    <div class="row" style="margin-top:10px;">
+      <button id="autoBtn" class="ghost" disabled>四隅を自動検出</button>
+      <button id="decodeBtn" disabled>このページを解析して追加</button>
+    </div>
+    <div class="status info" id="status">画像またはPDFを選択してください</div>
+    <label class="chk"><input type="checkbox" id="invert"> 白黒反転（黒背景スキャン等）</label>
+  </div>
+
+  <div class="panel">
+    <div class="canvas-wrap" id="cw">
+      <canvas id="view"></canvas>
+    </div>
+    <div class="hint">赤枠の4隅（青ハンドル）をドラッグしてグリッドをデータ範囲に合わせます。スマホはタッチ操作可。</div>
+  </div>
+
+  <div class="panel">
+    <div style="font-size:.9rem;color:#cbd5e1;margin-bottom:6px;">収集状況</div>
+    <div id="pagePills"></div>
+    <ul class="pages" id="pageList"></ul>
+    <div class="row" style="margin-top:8px;">
+      <button id="exportBtn" class="ok" disabled>全ページ結合してファイル保存</button>
+      <button id="resetBtn" class="warn">リセット</button>
+    </div>
+    <div class="status" id="exportStatus"></div>
+  </div>
+</div>
+
+<script>
+const CF = window.CardFormat;
+const pdfjsLib = window['pdfjsLib'] || window['pdfjs-dist/build/pdf'];
+if (pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc =
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+const view = document.getElementById('view');
+const vctx = view.getContext('2d', { willReadFrequently: true });
+
+// 元画像を保持する(高解像度)オフスクリーン canvas
+let src = document.createElement('canvas');
+let sctx = src.getContext('2d', { willReadFrequently: true });
+let hasImage = false;
+
+// グリッド四隅（元画像座標系）: TL, TR, BR, BL
+let corners = null;
+let dragIdx = -1;
+
+const statusEl = document.getElementById('status');
+function setStatus(msg, cls) { statusEl.className = 'status ' + (cls || 'info'); statusEl.textContent = msg; }
+
+// 収集済みページ: pageIndex -> {payload, header, meta}
+let collected = {};      // key: pageIndex
+let expectedTotal = null; // totalPages
+let expectedFileLen = null;
+
+/* ============ ファイル読み込み ============ */
+let pdfDoc = null, pdfPageNum = 1;
+document.getElementById('file').onchange = async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  pdfDoc = null;
+  document.getElementById('pdfPageHint').style.display = 'none';
+  if (f.type === 'application/pdf') {
+    const buf = await f.arrayBuffer();
+    pdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
+    pdfPageNum = 1;
+    await renderPdfPage();
+  } else {
+    const img = new Image();
+    img.onload = () => { loadImageToSrc(img, img.naturalWidth, img.naturalHeight); };
+    img.src = URL.createObjectURL(f);
+  }
+};
+
+async function renderPdfPage() {
+  const page = await pdfDoc.getPage(pdfPageNum);
+  // 300dpi 相当を狙って scale を決める。PDFは 72dpi 基準。
+  const scale = 300 / 72;
+  const vp = page.getViewport({ scale });
+  const tmp = document.createElement('canvas');
+  tmp.width = Math.round(vp.width); tmp.height = Math.round(vp.height);
+  await page.render({ canvasContext: tmp.getContext('2d'), viewport: vp }).promise;
+  loadImageToSrc(tmp, tmp.width, tmp.height);
+
+  const hint = document.getElementById('pdfPageHint');
+  if (pdfDoc.numPages > 1) {
+    hint.style.display = 'block';
+    hint.innerHTML = `PDF ${pdfPageNum}/${pdfDoc.numPages} ページ　` +
+      `<button style="width:auto;padding:4px 10px;display:inline-block" onclick="prevPdf()">◀前</button> ` +
+      `<button style="width:auto;padding:4px 10px;display:inline-block" onclick="nextPdf()">次▶</button>`;
+  }
+}
+window.prevPdf = async () => { if (pdfPageNum > 1) { pdfPageNum--; await renderPdfPage(); } };
+window.nextPdf = async () => { if (pdfPageNum < pdfDoc.numPages) { pdfPageNum++; await renderPdfPage(); } };
+
+function loadImageToSrc(imgOrCanvas, w, h) {
+  src.width = w; src.height = h;
+  sctx.drawImage(imgOrCanvas, 0, 0, w, h);
+  hasImage = true;
+  document.getElementById('autoBtn').disabled = false;
+  document.getElementById('decodeBtn').disabled = false;
+  setStatus('画像を読み込みました。四隅を自動検出します…', 'info');
+  autoDetect(); // 自動で一度検出を試みる
+}
+
+/* ============ 表示 ============ */
+function redraw() {
+  view.width = src.width; view.height = src.height;
+  vctx.drawImage(src, 0, 0);
+  if (!corners) return;
+  // グリッド線（赤）
+  vctx.strokeStyle = 'rgba(255,0,0,0.7)';
+  vctx.lineWidth = Math.max(1, src.width / 1000);
+  const step = 8; // 8セルごとに線（見やすさ優先）
+  for (let r = 0; r <= CF.ROWS; r += step) {
+    const L = lerp(corners[0], corners[3], r / CF.ROWS);
+    const R = lerp(corners[1], corners[2], r / CF.ROWS);
+    line(L, R);
+  }
+  for (let c = 0; c <= CF.COLS; c += step) {
+    const T = lerp(corners[0], corners[1], c / CF.COLS);
+    const B = lerp(corners[3], corners[2], c / CF.COLS);
+    line(T, B);
+  }
+  // 外枠を強調
+  vctx.lineWidth = Math.max(2, src.width / 500);
+  vctx.beginPath();
+  vctx.moveTo(corners[0].x, corners[0].y);
+  for (let i = 1; i < 4; i++) vctx.lineTo(corners[i].x, corners[i].y);
+  vctx.closePath(); vctx.stroke();
+  // ハンドル
+  const hs = Math.max(10, src.width / 90);
+  const labels = ['TL', 'TR', 'BR', 'BL'];
+  corners.forEach((p, i) => {
+    vctx.fillStyle = i === 0 ? '#22d3ee' : '#3b82f6';
+    vctx.fillRect(p.x - hs, p.y - hs, hs * 2, hs * 2);
+    vctx.fillStyle = '#fff'; vctx.font = `${hs*1.4}px sans-serif`; vctx.textAlign = 'center';
+    vctx.fillText(labels[i], p.x, p.y - hs - 4);
+  });
+}
+function line(a, b) { vctx.beginPath(); vctx.moveTo(a.x, a.y); vctx.lineTo(b.x, b.y); vctx.stroke(); }
+function lerp(p1, p2, f) { return { x: p1.x + (p2.x - p1.x) * f, y: p1.y + (p2.y - p1.y) * f }; }
+
+/* ============ 自動検出（四隅ファインダ） ============ */
+// 手順: グレースケール→大津の閾値で二値化→四象限それぞれで最も外側の黒塊の重心を探す。
+// 歪みは無い前提なので、四象限の「最も角に近い黒画素の塊」を採用する。
+function autoDetect() {
+  const w = src.width, h = src.height;
+  const data = sctx.getImageData(0, 0, w, h).data;
+  const invert = document.getElementById('invert').checked;
+
+  // ダウンサンプルして高速化
+  const scale = Math.max(1, Math.round(Math.max(w, h) / 800));
+  const sw = Math.floor(w / scale), sh = Math.floor(h / scale);
+  const gray = new Uint8Array(sw * sh);
+  let sum = 0;
+  for (let y = 0; y < sh; y++) {
+    for (let x = 0; x < sw; x++) {
+      const px = (y * scale * w + x * scale) * 4;
+      let g = (data[px] * 0.299 + data[px + 1] * 0.587 + data[px + 2] * 0.114);
+      if (invert) g = 255 - g;
+      gray[y * sw + x] = g;
+      sum += g;
+    }
+  }
+  const thr = CF.otsuThreshold(gray);
+  // 黒(=1) マスク
+  const bin = new Uint8Array(sw * sh);
+  for (let i = 0; i < gray.length; i++) bin[i] = gray[i] <= thr ? 1 : 0;
+
+  // 四隅探索: 各コーナー方向で「角からの距離 * を最小化する黒画素塊」を探す。
+  const found = findFinders(bin, sw, sh);
+  if (!found) {
+    setStatus('自動検出できませんでした。赤枠の角を手で合わせてください。', 'bad');
+    // フォールバック: 画像に対する既定比率
+    corners = [
+      { x: w * 0.10, y: h * 0.08 }, { x: w * 0.90, y: h * 0.08 },
+      { x: w * 0.90, y: h * 0.86 }, { x: w * 0.10, y: h * 0.86 },
+    ];
+    redraw();
+    return;
+  }
+  // found は縮小座標。元座標へ戻す。
+  corners = found.map(p => ({ x: p.x * scale, y: p.y * scale }));
+  // ファインダ中心 -> データグリッド四隅 へ内側補正
+  corners = finderToGrid(corners);
+  setStatus('四隅を自動検出しました。ズレていれば角をドラッグして調整してください。', 'ok');
+  redraw();
+}
+
+// 連結成分ラベリングで塊を抽出し、四隅に最も近い大きな塊の重心を返す
+function findFinders(bin, w, h) {
+  const labels = new Int32Array(w * h).fill(0);
+  let next = 1;
+  const comps = []; // {n, cx, cy, minx,miny,maxx,maxy}
+  const stack = [];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+      if (bin[idx] !== 1 || labels[idx] !== 0) continue;
+      const id = next++;
+      let n = 0, sx = 0, sy = 0, minx = x, miny = y, maxx = x, maxy = y;
+      stack.length = 0; stack.push(idx); labels[idx] = id;
+      while (stack.length) {
+        const p = stack.pop();
+        const px = p % w, py = (p / w) | 0;
+        n++; sx += px; sy += py;
+        if (px < minx) minx = px; if (px > maxx) maxx = px;
+        if (py < miny) miny = py; if (py > maxy) maxy = py;
+        // 4近傍
+        if (px > 0 && bin[p-1]===1 && labels[p-1]===0){labels[p-1]=id;stack.push(p-1);}
+        if (px < w-1 && bin[p+1]===1 && labels[p+1]===0){labels[p+1]=id;stack.push(p+1);}
+        if (py > 0 && bin[p-w]===1 && labels[p-w]===0){labels[p-w]=id;stack.push(p-w);}
+        if (py < h-1 && bin[p+w]===1 && labels[p+w]===0){labels[p+w]=id;stack.push(p+w);}
+      }
+      comps.push({ n, cx: sx / n, cy: sy / n, minx, miny, maxx, maxy });
+    }
+  }
+  if (comps.length < 4) return null;
+
+  // ファインダらしさ: そこそこ大きい & 概ね正方形。データセルの塊は小さいので除外。
+  const area = w * h;
+  const cand = comps.filter(c => {
+    const bw = c.maxx - c.minx + 1, bh = c.maxy - c.miny + 1;
+    const ar = bw / bh;
+    const fill = c.n / (bw * bh);
+    return c.n > area * 0.0006 && c.n < area * 0.05 && ar > 0.5 && ar < 2.0 && fill > 0.45;
+  });
+  const pool = cand.length >= 4 ? cand : comps;
+
+  // 各コーナーに最も近い候補を1つずつ選ぶ
+  const cornersRef = [
+    { x: 0, y: 0 }, { x: w, y: 0 }, { x: w, y: h }, { x: 0, y: h },
+  ];
+  const chosen = [];
+  const used = new Set();
+  for (const cr of cornersRef) {
+    let best = null, bestD = Infinity, bestI = -1;
+    pool.forEach((c, i) => {
+      if (used.has(i)) return;
+      const d = (c.cx - cr.x) ** 2 + (c.cy - cr.y) ** 2;
+      if (d < bestD) { bestD = d; best = c; bestI = i; }
+    });
+    if (!best) return null;
+    used.add(bestI);
+    chosen.push({ x: best.cx, y: best.cy });
+  }
+  return chosen; // TL,TR,BR,BL のファインダ中心
+}
+
+// ファインダ中心座標 -> データグリッド四隅
+// 生成側の幾何(FINDER,GAP,GRID)から、ファインダ中心とグリッド角の相対関係を用いて補正。
+function finderToGrid(fc) {
+  // 生成側: グリッド角(GX,GY) と ファインダ中心 の px オフセット
+  const offX = CF.GAP + CF.FINDER / 2; // グリッド左端から左ファインダ中心までの距離(左向き)
+  const offY = CF.GAP + CF.FINDER / 2;
+  // ファインダ中心の張る矩形の幅・高さ = グリッド幅 + 2*offX 相当
+  // 実測ファインダ中心からグリッド角へ内側方向に補正する比率を計算
+  const fW = ((fc[1].x - fc[0].x) + (fc[2].x - fc[3].x)) / 2; // 上下平均のファインダ間X
+  const fH = ((fc[3].y - fc[0].y) + (fc[2].y - fc[1].y)) / 2;
+  const gridSpanFinderX = CF.GRID_W + 2 * offX;
+  const gridSpanFinderY = CF.GRID_H + 2 * offY;
+  const rx = fW / gridSpanFinderX; // px(実) / px(理論)
+  const ry = fH / gridSpanFinderY;
+  const dx = offX * rx, dy = offY * ry;
+  return [
+    { x: fc[0].x + dx, y: fc[0].y + dy }, // TL
+    { x: fc[1].x - dx, y: fc[1].y + dy }, // TR
+    { x: fc[2].x - dx, y: fc[2].y - dy }, // BR
+    { x: fc[3].x + dx, y: fc[3].y - dy }, // BL
+  ];
+}
+
+document.getElementById('autoBtn').onclick = autoDetect;
+document.getElementById('invert').onchange = () => { if (hasImage) autoDetect(); };
+
+/* ============ セル読み取り & デコード ============ */
+document.getElementById('decodeBtn').onclick = () => {
+  if (!corners) { setStatus('先に四隅を合わせてください', 'bad'); return; }
+  const data = sctx.getImageData(0, 0, src.width, src.height).data;
+  const w = src.width;
+  const invert = document.getElementById('invert').checked;
+  const bits = new Uint8Array(CF.COLS * CF.ROWS);
+
+  // 各セル中心付近を 3x3 平均でサンプリング(ノイズ耐性)
+  for (let r = 0; r < CF.ROWS; r++) {
+    for (let c = 0; c < CF.COLS; c++) {
+      const T = lerp(corners[0], corners[1], (c + 0.5) / CF.COLS);
+      const B = lerp(corners[3], corners[2], (c + 0.5) / CF.COLS);
+      const pt = lerp(T, B, (r + 0.5) / CF.ROWS);
+      let acc = 0, cnt = 0;
+      for (let oy = -1; oy <= 1; oy++) {
+        for (let ox = -1; ox <= 1; ox++) {
+          const xx = Math.round(pt.x + ox), yy = Math.round(pt.y + oy);
+          if (xx < 0 || yy < 0 || xx >= src.width || yy >= src.height) continue;
+          const p = (yy * w + xx) * 4;
+          let g = data[p] * 0.299 + data[p+1] * 0.587 + data[p+2] * 0.114;
+          if (invert) g = 255 - g;
+          acc += g; cnt++;
+        }
+      }
+      const avg = cnt ? acc / cnt : 255;
+      bits[r * CF.COLS + c] = avg < 128 ? 1 : 0; // 黒=1
+    }
+  }
+
+  const { header, payload } = CF.bitGridToBytes(bits);
+  const meta = CF.parseHeader(header);
+  if (!meta) {
+    setStatus('ヘッダを認識できませんでした。グリッドを合わせ直してください（MAGIC不一致）。', 'bad');
+    return;
+  }
+  if (!meta.checksumOk) {
+    setStatus(`ヘッダのチェックサムNG。少しズレている可能性大。角を微調整して再試行してください。\n(読めた値: page ${meta.pageIndex+1}/${meta.totalPages})`, 'bad');
+    return;
+  }
+  // 収集に反映
+  expectedTotal = meta.totalPages;
+  expectedFileLen = meta.totalFileLen;
+  collected[meta.pageIndex] = { payload, payloadLen: meta.payloadLen, meta };
+  setStatus(`✅ page ${meta.pageIndex + 1}/${meta.totalPages} を取得（payload ${meta.payloadLen}B）`, 'ok');
+  updateCollectionUI();
+};
+
+function updateCollectionUI() {
+  const pills = document.getElementById('pagePills');
+  const list = document.getElementById('pageList');
+  pills.innerHTML = ''; list.innerHTML = '';
+  if (expectedTotal == null) return;
+  let haveAll = true;
+  for (let i = 0; i < expectedTotal; i++) {
+    const has = !!collected[i];
+    if (!has) haveAll = false;
+    const s = document.createElement('span');
+    s.className = 'pill ' + (has ? 'have' : 'miss');
+    s.textContent = `p${i + 1}${has ? '✓' : '…'}`;
+    pills.appendChild(s);
+  }
+  Object.keys(collected).sort((a,b)=>a-b).forEach(k => {
+    const c = collected[k];
+    const li = document.createElement('li');
+    li.textContent = `page ${(+k)+1}/${expectedTotal}  payload ${c.payloadLen}B`;
+    list.appendChild(li);
+  });
+  document.getElementById('exportBtn').disabled = !haveAll;
+  const es = document.getElementById('exportStatus');
+  es.className = 'status ' + (haveAll ? 'ok' : 'info');
+  es.textContent = haveAll
+    ? `全 ${expectedTotal} ページ収集完了。保存できます（合計 ${expectedFileLen}B）。`
+    : `残り ${expectedTotal - Object.keys(collected).length} ページ。次のカードを読み込んで追加してください。`;
+}
+
+/* ============ 結合してエクスポート ============ */
+document.getElementById('exportBtn').onclick = () => {
+  if (expectedTotal == null) return;
+  const out = new Uint8Array(expectedFileLen);
+  let off = 0;
+  for (let i = 0; i < expectedTotal; i++) {
+    const c = collected[i];
+    if (!c) { setStatus(`page ${i+1} が未収集です`, 'bad'); return; }
+    const len = c.payloadLen;
+    out.set(c.payload.subarray(0, len), off);
+    off += len;
+  }
+  const blob = new Blob([out], { type: 'application/octet-stream' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'restored_naidesu.bin';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+};
+
+document.getElementById('resetBtn').onclick = () => {
+  collected = {}; expectedTotal = null; expectedFileLen = null;
+  updateCollectionUI();
+  setStatus('収集をリセットしました', 'info');
+};
+
+/* ============ ドラッグ（マウス+タッチ） ============ */
+function evtToImg(clientX, clientY) {
+  const r = view.getBoundingClientRect();
+  return {
+    x: (clientX - r.left) * (view.width / r.width),
+    y: (clientY - r.top) * (view.height / r.height),
+  };
+}
+function pickHandle(x, y) {
+  if (!corners) return -1;
+  const thr = Math.max(30, src.width / 40);
+  let bi = -1, bd = thr;
+  corners.forEach((p, i) => { const d = Math.hypot(p.x - x, p.y - y); if (d < bd) { bd = d; bi = i; } });
+  return bi;
+}
+view.addEventListener('mousedown', (e) => {
+  const p = evtToImg(e.clientX, e.clientY); dragIdx = pickHandle(p.x, p.y);
+});
+window.addEventListener('mousemove', (e) => {
+  if (dragIdx < 0) return;
+  const p = evtToImg(e.clientX, e.clientY);
+  corners[dragIdx] = p; redraw();
+});
+window.addEventListener('mouseup', () => dragIdx = -1);
+
+view.addEventListener('touchstart', (e) => {
+  const t = e.touches[0]; const p = evtToImg(t.clientX, t.clientY);
+  dragIdx = pickHandle(p.x, p.y);
+  if (dragIdx >= 0) e.preventDefault();
+}, { passive: false });
+view.addEventListener('touchmove', (e) => {
+  if (dragIdx < 0) return;
+  const t = e.touches[0]; const p = evtToImg(t.clientX, t.clientY);
+  corners[dragIdx] = p; redraw(); e.preventDefault();
+}, { passive: false });
+view.addEventListener('touchend', () => dragIdx = -1);
+</script>
+</body>
+</html>

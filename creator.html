@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>naidesu-cardloader — カード作成 (Creator)</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="js/card-format.js"></script>
+<style>
+  :root { --accent:#2563eb; --ok:#16a34a; --bg:#0f172a; --card:#1e293b; --line:#334155; }
+  * { box-sizing:border-box; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", sans-serif;
+         margin:0; background:var(--bg); color:#e2e8f0; padding:16px; }
+  .wrap { max-width:820px; margin:0 auto; }
+  h1 { font-size:1.35rem; margin:.2em 0; }
+  .sub { color:#94a3b8; font-size:.85rem; margin-bottom:1rem; }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:12px;
+           padding:16px; margin-bottom:14px; }
+  label { display:block; font-size:.85rem; color:#cbd5e1; margin:.4rem 0 .2rem; }
+  input[type=file], select { width:100%; padding:10px; border-radius:8px; border:1px solid var(--line);
+           background:#0b1220; color:#e2e8f0; font-size:1rem; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; }
+  .row > * { flex:1; min-width:140px; }
+  button { cursor:pointer; border:0; border-radius:9px; padding:12px 14px; font-size:1rem; font-weight:600;
+           color:#fff; background:var(--accent); width:100%; }
+  button.ok { background:var(--ok); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .info { font-size:.85rem; color:#93c5fd; margin:8px 0; white-space:pre-line; }
+  .previews { display:flex; gap:12px; flex-wrap:wrap; margin-top:10px; }
+  .previews figure { margin:0; background:#fff; padding:6px; border-radius:8px; }
+  .previews canvas { display:block; width:150px; height:auto; }
+  .previews figcaption { color:#0f172a; font-size:.7rem; text-align:center; margin-top:4px; }
+  code { background:#0b1220; padding:2px 6px; border-radius:5px; }
+  a.homelink { color:#93c5fd; font-size:.85rem; }
+</style>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22><text y=%2214%22 font-size=%2214%22>📇</text></svg>">
+</head>
+<body>
+<div class="wrap">
+  <h1>📇 naidesu-cardloader — カード作成</h1>
+  <div class="sub">
+    バイナリ(どんなファイルでも) → A4/300dpi の「パンチカード」画像に変換して印刷します。<br>
+    1ページ最大 <b id="capLbl"></b> バイト。超える場合は自動で複数ページに分割します。
+    <a class="homelink" href="decoder.html">→ 読み取り(Decoder)へ</a>
+  </div>
+
+  <div class="panel">
+    <label>① ファイルを選択（テキスト・画像・zip 等なんでも可）</label>
+    <input type="file" id="file">
+    <div class="row" style="margin-top:12px;">
+      <div>
+        <label>② 出力形式</label>
+        <select id="fmt">
+          <option value="pdf">PDF（複数ページを1ファイルに・推奨）</option>
+          <option value="png">PNG（ページごとに個別ダウンロード）</option>
+          <option value="jpg">JPG（ページごとに個別ダウンロード）</option>
+        </select>
+      </div>
+    </div>
+    <div class="info" id="info">ファイル未選択</div>
+    <button id="gen" disabled>③ カードを生成してダウンロード</button>
+  </div>
+
+  <div class="panel">
+    <div style="font-size:.9rem;color:#cbd5e1;">プレビュー（縮小表示）</div>
+    <div class="previews" id="previews"></div>
+  </div>
+
+  <div class="panel" style="font-size:.8rem;color:#94a3b8;">
+    <b>印刷のコツ</b><br>
+    ・A4 に「実サイズ / 100% / 用紙に合わせる」で印刷（拡大縮小なしが理想）。<br>
+    ・白黒でOK。四隅の黒い■は自動位置合わせ用なので切らないこと。<br>
+    ・読み取りは <code>decoder.html</code> にスキャン画像(300dpi程度)またはPDFを読み込ませます。
+  </div>
+</div>
+
+<script>
+const CF = window.CardFormat;
+document.getElementById('capLbl').textContent = CF.PAYLOAD_BYTES;
+
+let fileBytes = null;
+let fileName = 'data.bin';
+let pages = [];
+
+const infoEl = document.getElementById('info');
+const genBtn = document.getElementById('gen');
+const previewsEl = document.getElementById('previews');
+
+document.getElementById('file').onchange = async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  fileName = f.name;
+  fileBytes = new Uint8Array(await f.arrayBuffer());
+  pages = CF.splitFile(fileBytes);
+  infoEl.textContent =
+    `ファイル: ${fileName}\n` +
+    `サイズ: ${fileBytes.length} byte\n` +
+    `ページ数: ${pages.length}（1ページ ${CF.PAYLOAD_BYTES} byte）`;
+  genBtn.disabled = false;
+  renderPreviews();
+};
+
+// ---- 1ページ分をフルサイズ canvas に描画 --------------------
+function drawPage(page) {
+  const cv = document.createElement('canvas');
+  cv.width = CF.PAGE_W; cv.height = CF.PAGE_H;
+  const ctx = cv.getContext('2d');
+
+  // 白背景
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+
+  ctx.fillStyle = '#000';
+
+  // 四隅ファインダ（正方形）。TL は二重四角にして向き判定に使う。
+  const f = CF.finderCenters();
+  const half = CF.FINDER / 2;
+  drawFinder(ctx, f.tl, half, true);   // TL: 特別マーク(中に白抜き+中心黒)
+  drawFinder(ctx, f.tr, half, false);
+  drawFinder(ctx, f.br, half, false);
+  drawFinder(ctx, f.bl, half, false);
+
+  // データセル
+  const bits = CF.bytesToBitGrid(page.header, page.payload);
+  for (let r = 0; r < CF.ROWS; r++) {
+    for (let c = 0; c < CF.COLS; c++) {
+      if (bits[r * CF.COLS + c]) {
+        const x = CF.GRID_X + c * CF.CELL_W;
+        const y = CF.GRID_Y + r * CF.CELL_H;
+        // わずかに内側に描いてにじみ対策
+        ctx.fillRect(x + 0.5, y + 0.5, CF.CELL_W - 1, CF.CELL_H - 1);
+      }
+    }
+  }
+
+  // グリッド外枠（細線・読み取り時の目安）
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(CF.GRID_X, CF.GRID_Y, CF.GRID_W, CF.GRID_H);
+
+  // フッタ表記（人間可読・読み取りには使わない）
+  const hdr = CF.parseHeader(page.header);
+  ctx.fillStyle = '#000';
+  ctx.font = '28px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(
+    `naidesu-cardloader  page ${hdr.pageIndex + 1}/${hdr.totalPages}  ` +
+    `payload ${hdr.payloadLen}B  total ${hdr.totalFileLen}B`,
+    CF.PAGE_W / 2, CF.PAGE_H - 60
+  );
+  return cv;
+}
+
+// ファインダ: 塗り正方形。special=true の TL は「四角の中に白抜きの四角、さらに中心に黒点」
+function drawFinder(ctx, center, half, special) {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(center.x - half, center.y - half, half * 2, half * 2);
+  if (special) {
+    const q = half * 0.55;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(center.x - q, center.y - q, q * 2, q * 2);
+    const q2 = half * 0.22;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(center.x - q2, center.y - q2, q2 * 2, q2 * 2);
+  }
+}
+
+function renderPreviews() {
+  previewsEl.innerHTML = '';
+  pages.forEach((page, i) => {
+    const full = drawPage(page);
+    const small = document.createElement('canvas');
+    const scale = 150 / full.width;
+    small.width = 150; small.height = Math.round(full.height * scale);
+    small.getContext('2d').drawImage(full, 0, 0, small.width, small.height);
+    const fig = document.createElement('figure');
+    const cap = document.createElement('figcaption');
+    cap.textContent = `page ${i + 1}/${pages.length}`;
+    fig.appendChild(small); fig.appendChild(cap);
+    previewsEl.appendChild(fig);
+  });
+}
+
+// ---- 生成 & ダウンロード ------------------------------------
+genBtn.onclick = () => {
+  const fmt = document.getElementById('fmt').value;
+  const base = fileName.replace(/\.[^.]+$/, '') || 'data';
+  if (fmt === 'pdf') {
+    exportPDF(base);
+  } else {
+    exportImages(base, fmt);
+  }
+};
+
+function exportPDF(base) {
+  const { jsPDF } = window.jspdf;
+  // A4 縦。単位 pt。jsPDF の a4 = 595.28 x 841.89 pt
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+  const pw = doc.internal.pageSize.getWidth();
+  const ph = doc.internal.pageSize.getHeight();
+  pages.forEach((page, i) => {
+    if (i > 0) doc.addPage();
+    const cv = drawPage(page);
+    const img = cv.toDataURL('image/jpeg', 0.92);
+    doc.addImage(img, 'JPEG', 0, 0, pw, ph);
+  });
+  doc.save(`${base}_naidesu_cards.pdf`);
+}
+
+function exportImages(base, fmt) {
+  pages.forEach((page, i) => {
+    const cv = drawPage(page);
+    const mime = fmt === 'png' ? 'image/png' : 'image/jpeg';
+    const ext = fmt === 'png' ? 'png' : 'jpg';
+    cv.toBlob((blob) => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${base}_card_${String(i + 1).padStart(2, '0')}of${String(pages.length).padStart(2, '0')}.${ext}`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    }, mime, fmt === 'jpg' ? 0.92 : undefined);
+  });
+}
+</script>
+</body>
+</html>
