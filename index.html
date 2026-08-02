@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>naidesu-cardloader</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22><text y=%2214%22 font-size=%2214%22>📇</text></svg>">
+<style>
+  body{font-family:system-ui,-apple-system,"Segoe UI","Hiragino Sans",sans-serif;margin:0;background:#0f172a;color:#e2e8f0;}
+  .wrap{max-width:720px;margin:0 auto;padding:40px 20px;}
+  h1{font-size:1.8rem;margin:.2em 0;}
+  .tag{color:#94a3b8;margin-bottom:2rem;}
+  .cards{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  @media(max-width:560px){.cards{grid-template-columns:1fr;}}
+  a.card{display:block;text-decoration:none;color:inherit;background:#1e293b;border:1px solid #334155;border-radius:14px;padding:24px;transition:.15s;}
+  a.card:hover{border-color:#2563eb;transform:translateY(-2px);}
+  a.card .ic{font-size:2.4rem;}
+  a.card h2{margin:.4em 0 .2em;font-size:1.2rem;}
+  a.card p{color:#94a3b8;font-size:.85rem;margin:0;}
+  .flow{margin-top:2.5rem;background:#1e293b;border:1px solid #334155;border-radius:14px;padding:20px;font-size:.9rem;line-height:1.7;}
+  code{background:#0b1220;padding:2px 6px;border-radius:5px;}
+  .foot{margin-top:2rem;color:#64748b;font-size:.8rem;}
+  a{color:#93c5fd;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>📇 naidesu-cardloader</h1>
+  <div class="tag">(何もかも)ないです — バイナリ ⇄ 紙のパンチカード（A4 / 300dpi）</div>
+
+  <div class="cards">
+    <a class="card" href="creator.html">
+      <div class="ic">🖨️</div>
+      <h2>作成 (Creator)</h2>
+      <p>ファイル → カード画像(PDF / PNG / JPG) を作って印刷。1KBごとに自動分割。</p>
+    </a>
+    <a class="card" href="decoder.html">
+      <div class="ic">🔍</div>
+      <h2>読み取り (Decoder)</h2>
+      <p>スキャン画像/写真/PDF → 四隅を自動検出してバイナリに復元・結合。</p>
+    </a>
+  </div>
+
+  <div class="flow">
+    <b>使い方</b><br>
+    ① <a href="creator.html">Creator</a> でファイルを選び、カードを PDF などで出力 → A4 に等倍印刷<br>
+    ② 印刷物を 300dpi 程度でスキャン（または正面から撮影）<br>
+    ③ <a href="decoder.html">Decoder</a> に読み込む → 四隅の黒■を自動検出 → ズレたら赤枠をドラッグ補正<br>
+    ④ 「解析して追加」→ 全ページ揃ったら「結合して保存」で元ファイルが復元されます<br>
+    <br>
+    仕様: A4限定 / 300dpi想定 / 96×96セル / 1セル=1bit / 1ページ最大 <code>1140</code> byte。
+  </div>
+
+  <div class="foot">
+    static site（サーバ不要・すべてブラウザ内で完結）。
+    <a href="https://github.com/cheattoolymt/naidesu-cardloader">GitHub</a>
+  </div>
+</div>
+</body>
+</html>

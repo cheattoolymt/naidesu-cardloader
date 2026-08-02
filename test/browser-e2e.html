@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>naidesu-cardloader E2E (browser Canvas)</title>
+<script src="../js/card-format.js"></script>
+<style>body{font-family:monospace;background:#111;color:#0f0;padding:16px;} .fail{color:#f66;} .ok{color:#6f6;} img,canvas{max-width:200px;border:1px solid #333;margin:4px;background:#fff;}</style>
+</head>
+<body>
+<h3>E2E: 実ブラウザ Canvas で 生成→(画像化)→自動検出→復元 を検証</h3>
+<pre id="log"></pre>
+<div id="thumbs"></div>
+<script>
+const CF = window.CardFormat;
+const log = (m, cls) => { const l=document.getElementById('log'); l.innerHTML += `<span class="${cls||''}">${m}</span>\n`; };
+let failed = 0;
+const assert=(c,m)=>{ if(!c){failed++; log('FAIL: '+m,'fail');} else log('ok: '+m,'ok'); };
+
+// creator.html と同じ描画（フルサイズ canvas）
+function drawPage(page){
+  const cv=document.createElement('canvas'); cv.width=CF.PAGE_W; cv.height=CF.PAGE_H;
+  const ctx=cv.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,cv.width,cv.height); ctx.fillStyle='#000';
+  const f=CF.finderCenters(); const half=CF.FINDER/2;
+  const df=(c,special)=>{ctx.fillStyle='#000';ctx.fillRect(c.x-half,c.y-half,half*2,half*2);
+    if(special){const q=half*0.55;ctx.fillStyle='#fff';ctx.fillRect(c.x-q,c.y-q,q*2,q*2);const q2=half*0.22;ctx.fillStyle='#000';ctx.fillRect(c.x-q2,c.y-q2,q2*2,q2*2);}};
+  df(f.tl,true);df(f.tr,false);df(f.br,false);df(f.bl,false);
+  const bits=CF.bytesToBitGrid(page.header,page.payload);
+  for(let r=0;r<CF.ROWS;r++)for(let c=0;c<CF.COLS;c++)if(bits[r*CF.COLS+c])ctx.fillRect(CF.GRID_X+c*CF.CELL_W+0.5,CF.GRID_Y+r*CF.CELL_H+0.5,CF.CELL_W-1,CF.CELL_H-1);
+  return cv;
+}
+
+// decoder.html のロジック（自動検出＋サンプリング）
+const lerp=(a,b,f)=>({x:a.x+(b.x-a.x)*f,y:a.y+(b.y-a.y)*f});
+function findFinders(bin,w,h){
+  const labels=new Int32Array(w*h);let next=1;const comps=[];const stack=[];
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){const idx=y*w+x;if(bin[idx]!==1||labels[idx])continue;
+    const id=next++;let n=0,sx=0,sy=0,minx=x,miny=y,maxx=x,maxy=y;stack.length=0;stack.push(idx);labels[idx]=id;
+    while(stack.length){const p=stack.pop();const px=p%w,py=(p/w)|0;n++;sx+=px;sy+=py;
+      if(px<minx)minx=px;if(px>maxx)maxx=px;if(py<miny)miny=py;if(py>maxy)maxy=py;
+      if(px>0&&bin[p-1]===1&&!labels[p-1]){labels[p-1]=id;stack.push(p-1);}
+      if(px<w-1&&bin[p+1]===1&&!labels[p+1]){labels[p+1]=id;stack.push(p+1);}
+      if(py>0&&bin[p-w]===1&&!labels[p-w]){labels[p-w]=id;stack.push(p-w);}
+      if(py<h-1&&bin[p+w]===1&&!labels[p+w]){labels[p+w]=id;stack.push(p+w);}}
+    comps.push({n,cx:sx/n,cy:sy/n,minx,miny,maxx,maxy});}
+  if(comps.length<4)return null;
+  const area=w*h;const cand=comps.filter(c=>{const bw=c.maxx-c.minx+1,bh=c.maxy-c.miny+1,ar=bw/bh,fill=c.n/(bw*bh);return c.n>area*0.0006&&c.n<area*0.05&&ar>0.5&&ar<2.0&&fill>0.45;});
+  const pool=cand.length>=4?cand:comps;
+  const refs=[{x:0,y:0},{x:w,y:0},{x:w,y:h},{x:0,y:h}];const chosen=[];const used=new Set();
+  for(const cr of refs){let best=null,bd=Infinity,bi=-1;pool.forEach((c,i)=>{if(used.has(i))return;const d=(c.cx-cr.x)**2+(c.cy-cr.y)**2;if(d<bd){bd=d;best=c;bi=i;}});if(!best)return null;used.add(bi);chosen.push({x:best.cx,y:best.cy});}
+  return chosen;
+}
+function finderToGrid(fc){const offX=CF.GAP+CF.FINDER/2,offY=CF.GAP+CF.FINDER/2;
+  const fW=((fc[1].x-fc[0].x)+(fc[2].x-fc[3].x))/2,fH=((fc[3].y-fc[0].y)+(fc[2].y-fc[1].y))/2;
+  const rx=fW/(CF.GRID_W+2*offX),ry=fH/(CF.GRID_H+2*offY);const dx=offX*rx,dy=offY*ry;
+  return [{x:fc[0].x+dx,y:fc[0].y+dy},{x:fc[1].x-dx,y:fc[1].y+dy},{x:fc[2].x-dx,y:fc[2].y-dy},{x:fc[3].x+dx,y:fc[3].y-dy}];}
+function autoDetect(ctx,w,h){
+  const data=ctx.getImageData(0,0,w,h).data;
+  const scale=Math.max(1,Math.round(Math.max(w,h)/800));const sw=Math.floor(w/scale),sh=Math.floor(h/scale);const gray=new Uint8Array(sw*sh);
+  for(let y=0;y<sh;y++)for(let x=0;x<sw;x++){const px=(y*scale*w+x*scale)*4;gray[y*sw+x]=data[px]*0.299+data[px+1]*0.587+data[px+2]*0.114;}
+  const thr=CF.otsuThreshold(gray);const bin=new Uint8Array(sw*sh);for(let i=0;i<gray.length;i++)bin[i]=gray[i]<=thr?1:0;
+  const found=findFinders(bin,sw,sh);if(!found)return null;
+  return finderToGrid(found.map(p=>({x:p.x*scale,y:p.y*scale})));
+}
+function decode(ctx,w,h,corners){
+  const data=ctx.getImageData(0,0,w,h).data;const bits=new Uint8Array(CF.COLS*CF.ROWS);
+  for(let r=0;r<CF.ROWS;r++)for(let c=0;c<CF.COLS;c++){
+    const T=lerp(corners[0],corners[1],(c+0.5)/CF.COLS),B=lerp(corners[3],corners[2],(c+0.5)/CF.COLS);const pt=lerp(T,B,(r+0.5)/CF.ROWS);
+    let acc=0,cnt=0;for(let oy=-1;oy<=1;oy++)for(let ox=-1;ox<=1;ox++){const xx=Math.round(pt.x+ox),yy=Math.round(pt.y+oy);if(xx<0||yy<0||xx>=w||yy>=h)continue;const p=(yy*w+xx)*4;acc+=data[p]*0.299+data[p+1]*0.587+data[p+2]*0.114;cnt++;}
+    bits[r*CF.COLS+c]=(cnt?acc/cnt:255)<128?1:0;}
+  const {header,payload}=CF.bitGridToBytes(bits);return {meta:CF.parseHeader(header),payload};
+}
+
+async function loadViaJPEG(cv){ // 実際のJPEG圧縮を経由（劣化耐性の確認）
+  return new Promise(res=>{const img=new Image();img.onload=()=>{const c=document.createElement('canvas');c.width=cv.width;c.height=cv.height;const cx=c.getContext('2d',{willReadFrequently:true});cx.drawImage(img,0,0);res(c);};img.src=cv.toDataURL('image/jpeg',0.9);});
+}
+
+async function runCase(name, bytes, viaJpeg){
+  log(`\n=== ${name} (${bytes.length}B, jpeg=${!!viaJpeg}) ===`);
+  const pages=CF.splitFile(bytes);const restored=new Uint8Array(bytes.length);let off=0,ok=true;
+  for(const page of pages){
+    let cv=drawPage(page);
+    if(viaJpeg) cv=await loadViaJPEG(cv);
+    const ctx=cv.getContext('2d',{willReadFrequently:true});
+    const corners=autoDetect(ctx,cv.width,cv.height);
+    if(!corners){ok=false;log('autoDetect null','fail');break;}
+    const {meta,payload}=decode(ctx,cv.width,cv.height,corners);
+    if(!meta||!meta.checksumOk){ok=false;log('decode fail '+JSON.stringify(meta),'fail');break;}
+    restored.set(payload.subarray(0,meta.payloadLen),off);off+=meta.payloadLen;
+  }
+  // サムネイル
+  const small=document.createElement('canvas');const full=drawPage(pages[0]);const s=180/full.width;small.width=180;small.height=full.height*s;small.getContext('2d').drawImage(full,0,0,small.width,small.height);document.getElementById('thumbs').appendChild(small);
+  assert(ok,`${name}: pipeline ok`);
+  assert(off===bytes.length,`${name}: len ${off}==${bytes.length}`);
+  let eq=ok&&off===bytes.length;for(let i=0;i<bytes.length&&eq;i++)if(bytes[i]!==restored[i])eq=false;
+  assert(eq,`${name}: byte-exact`);
+}
+
+(async()=>{
+  await runCase('text', new TextEncoder().encode('naidesu-cardloader browser E2E ✓ 日本語もOK 0123456789'));
+  await runCase('1KB-random', crypto.getRandomValues(new Uint8Array(1024)));
+  await runCase('multi-2p', crypto.getRandomValues(new Uint8Array(CF.PAYLOAD_BYTES+400)));
+  await runCase('1KB-viaJPEG', crypto.getRandomValues(new Uint8Array(1024)), true);
+  log(failed? `\n*** ${failed} FAILED ***`:'\nALL BROWSER E2E PASSED', failed?'fail':'ok');
+  document.title = failed ? 'E2E FAIL' : 'E2E PASS';
+})();
+</script>
+</body>
+</html>
