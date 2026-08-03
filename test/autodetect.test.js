@@ -5,7 +5,7 @@
  * モード自動判別→デコードして往復一致を検証する。
  * これは decoder.html の実経路(理想座標ではない)をテストする。
  *
- * 1KB(96x96) / 2KB(136x136) 両モードを検証する。
+ * 1KB(96x96) / 2KB(136x136) / 3KB(160x160) 各モードを検証する。
  */
 'use strict';
 global.window = global;
@@ -137,7 +137,9 @@ function run(name,bytes,mode,opt){
 
 for(const mode of CF.MODES){
   run('auto-small', new TextEncoder().encode('naidesu auto-detect test 1234567890'), mode);
-  run('auto-cap', crypto.getRandomValues(new Uint8Array(mode==='2kb'?2048:1024)), mode);
+  run('auto-cap', crypto.getRandomValues(new Uint8Array(mode==='3kb'?3072:(mode==='2kb'?2048:1024))), mode);
+  // 3KB モードで 4KB ファイルが自動分割で往復できるか
+  if (mode==='3kb') run('auto-4KB-file', crypto.getRandomValues(new Uint8Array(4096)), mode);
   run('auto-multi', crypto.getRandomValues(new Uint8Array(CF.getProfile(mode).PAYLOAD_BYTES*2+300)), mode);
   // スキャン解像度違い(1.3x)や余白付き(平行移動)でも動くか
   run('auto-scaled', crypto.getRandomValues(new Uint8Array(900)), mode, {scale:1.3});

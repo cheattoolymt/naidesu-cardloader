@@ -100,7 +100,7 @@ function setStatus(msg, cls) { statusEl.className = 'status ' + (cls || 'info');
 let collected = {};      // key: pageIndex
 let expectedTotal = null; // totalPages
 let expectedFileLen = null;
-let expectedMode = null;  // '1kb' | '2kb'（最初に読めたページのモードで固定）
+let expectedMode = null;  // '1kb' | '2kb' | '3kb'（最初に読めたページのモードで固定）
 
 /* ============ ファイル読み込み ============ */
 let pdfDoc = null, pdfPageNum = 1;
