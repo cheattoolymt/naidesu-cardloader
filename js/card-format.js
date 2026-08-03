@@ -7,24 +7,30 @@
  *
  * すべて A4 / 300dpi 前提。1bit = 1セル。
  *
- * ● 密度モード (3種) ------------------------------------------------
- *   "1kb": 96 x 96 セル   -> 1140 byte/枚 (1KB を余裕で1枚)
- *   "2kb": 136 x 136 セル -> 2295 byte/枚 (2KB=2048B を余裕で1枚)
- *   "3kb": 160 x 160 セル -> 3180 byte/枚 (3KB=3072B を余裕で1枚)
+ * ● ページ全面を使う設計 --------------------------------------------
+ *   以前はデータグリッドが「正方形」で、A4(2480x3508px)の上半分強しか
+ *   使っていなかった。本バージョンでは四隅ファインダの内側いっぱい
+ *   (ページ全高からフッタ分だけを除いた領域)をデータ領域として使う。
+ *   グリッド矩形 GRID_W x GRID_H は全モード共通の「1つの長方形」で固定し、
+ *   各モードはその同じ長方形を cols x rows に細分するだけ。
+ *   これによりファインダ位置も全モード共通のまま、容量を大幅に拡張できる。
  *
- *   グリッドは常に正方形セル。300dpi でのセル物理サイズは
+ * ● 密度モード (4種) ------------------------------------------------
+ *   "1kb":  96 x 143 セル ->  1704 byte/枚 (1KB を余裕で1枚)
+ *   "2kb": 112 x 167 セル ->  2324 byte/枚 (2KB=2048B を余裕で1枚)
+ *   "3kb": 130 x 194 セル ->  3136 byte/枚 (3KB=3072B を余裕で1枚)
+ *   "4kb": 149 x 222 セル ->  4116 byte/枚 (4KB=4096B を余裕で1枚)
+ *
+ *   グリッドはほぼ正方形セル(アスペクト比 ≈ 1.00)。300dpi でのセル物理サイズは
  *     1kb: 約 19.4px ≈ 1.64mm
- *     2kb: 約 13.7px ≈ 1.16mm
- *     3kb: 約 11.6px ≈ 0.98mm
+ *     2kb: 約 16.6px ≈ 1.41mm
+ *     3kb: 約 14.3px ≈ 1.21mm
+ *     4kb: 約 12.5px ≈ 1.06mm
  *   いずれも 300dpi スキャンで安定して読めるサイズを維持している。
+ *   最高密度の 4kb でも 1.06mm あり、旧 3kb モード(0.98mm/正方形半ページ)より
+ *   むしろ大きい。ページ全高を使うことで、セルを縮めずに 4KB を1枚へ収められる。
  *
- *   ※ 4KB(4096B)を1枚に収めるには 192x192 程度が必要になり、
- *     1セル ≈ 9.7px(0.82mm) まで縮小して 300dpi スキャンの読取安定性が
- *     大きく損なわれる(2kb の 1.16mm を大きく下回る)。そのため 4KB モードは
- *     設けず、代わりに 3KB モード(1セル 0.98mm を確保)を上限としている。
- *     4KB 以上のファイルは 3KB モードで自動的に複数ページに分割される。
- *
- *   デコーダはモードを事前に知らなくても、両モードのグリッドで
+ *   デコーダはモードを事前に知らなくても、全モードのグリッドで
  *   ヘッダを試し読みし、MAGIC + チェックサムが通った方を採用する
  *   (ヘッダにもモードIDを格納して整合を確認する)。
  * ================================================================== */
@@ -48,8 +54,19 @@
   const QUIET = 150; // px
   const FINDER = 120; // px 正方形マーカー
   const GAP = 40; // px
+  const FOOTER = 110; // px 下端の人間可読テキスト用に確保する余白
 
   const HEADER_ROWS = 1; // 先頭1行はヘッダ
+
+  // ---- 全モード共通のデータグリッド矩形(px) ------------------
+  // 四隅ファインダの内側いっぱいを使う「1つの長方形」。cols/rows のみ
+  // モードで切り替え、この矩形自体は固定する(=ファインダ位置も固定)。
+  // 以前は正方形グリッドで A4 の上半分強しか使っていなかったが、
+  // ここでページ全高(下端フッタ分だけ除く)を使うことで容量を大幅拡張する。
+  const GRID_X = QUIET + FINDER + GAP; // 310
+  const GRID_Y = QUIET + FINDER + GAP; // 310 (上端)
+  const GRID_W = PAGE_W - 2 * GRID_X;  // 1860
+  const GRID_H = PAGE_H - GRID_Y - GRID_X - FOOTER; // 2778 (ページ全高活用)
 
   // ---- ヘッダ仕様 ----------------------------------------------
   // 12 byte:
@@ -66,22 +83,17 @@
   const HEADER_LEN = 12;
 
   // モードID (VERSIONバイトの上位4bitに格納)
-  const MODE_ID = { '1kb': 0, '2kb': 1, '3kb': 2 };
-  const ID_MODE = { 0: '1kb', 1: '2kb', 2: '3kb' };
+  const MODE_ID = { '1kb': 0, '2kb': 1, '3kb': 2, '4kb': 3 };
+  const ID_MODE = { 0: '1kb', 1: '2kb', 2: '3kb', 3: '4kb' };
 
   // ---- プロファイル(密度モード)生成 ---------------------------
+  // 全モードは共通の GRID_X/Y/W/H 長方形を cols x rows に細分するだけ。
+  // cols/rows は 1860:2778 ≈ 2:3 に近い比で選ぶため、セルはほぼ正方形。
   function makeProfile(mode, cols, rows) {
     const HEADER_BITS = HEADER_ROWS * cols;
     const DATA_BITS = (rows - HEADER_ROWS) * cols;
     const PAYLOAD_BYTES = Math.floor(DATA_BITS / 8);
 
-    // グリッド外枠 (ファインダ中心を結ぶ矩形の内側)
-    // cols==rows なので、セルを正方形にするため GRID を正方形にし、
-    // ページ上方寄せ(フッタ文字用に下側へ余白)にする。
-    const GRID_X = QUIET + FINDER + GAP;
-    const GRID_W = PAGE_W - 2 * GRID_X;
-    const GRID_H = GRID_W * (rows / cols); // 正方形セル
-    const GRID_Y = QUIET + FINDER + GAP; // 上方寄せ
     const CELL_W = GRID_W / cols;
     const CELL_H = GRID_H / rows;
 
@@ -103,12 +115,16 @@
     };
   }
 
-  // 1kb: 96x96 -> payload 1140B / 2kb: 136x136 -> payload 2295B
-  // 3kb: 160x160 -> payload 3180B (1セル ≈ 11.6px ≈ 0.98mm)
+  // 共通長方形(1860 x 2778)を細分する cols x rows。payload はページ全高を活用。
+  //   1kb:  96x143 -> 1704B (cell ≈ 1.64mm)
+  //   2kb: 112x167 -> 2324B (cell ≈ 1.41mm)
+  //   3kb: 130x194 -> 3136B (cell ≈ 1.21mm)
+  //   4kb: 149x222 -> 4116B (cell ≈ 1.06mm)  ← 4KB(4096B)を余裕で1枚に
   const PROFILES = {
-    '1kb': makeProfile('1kb', 96, 96),
-    '2kb': makeProfile('2kb', 136, 136),
-    '3kb': makeProfile('3kb', 160, 160),
+    '1kb': makeProfile('1kb', 96, 143),
+    '2kb': makeProfile('2kb', 112, 167),
+    '3kb': makeProfile('3kb', 130, 194),
+    '4kb': makeProfile('4kb', 149, 222),
   };
   const MODES = Object.keys(PROFILES);
 
@@ -120,12 +136,12 @@
   // グリッド矩形はモードに依らず同一(GRID_X/Y/W/H は全モード同値)なので、
   // ファインダ位置も共通。TL, TR, BR, BL の順 (時計回り)。
   function finderCenters() {
-    const p = PROFILES['1kb']; // GRID_* は全モード共通値
+    // GRID_X/Y/W/H は全モード共通のトップレベル定数。
     const half = FINDER / 2;
-    const tl = { x: p.GRID_X - GAP - half, y: p.GRID_Y - GAP - half };
-    const tr = { x: p.GRID_X + p.GRID_W + GAP + half, y: p.GRID_Y - GAP - half };
-    const br = { x: p.GRID_X + p.GRID_W + GAP + half, y: p.GRID_Y + p.GRID_H + GAP + half };
-    const bl = { x: p.GRID_X - GAP - half, y: p.GRID_Y + p.GRID_H + GAP + half };
+    const tl = { x: GRID_X - GAP - half, y: GRID_Y - GAP - half };
+    const tr = { x: GRID_X + GRID_W + GAP + half, y: GRID_Y - GAP - half };
+    const br = { x: GRID_X + GRID_W + GAP + half, y: GRID_Y + GRID_H + GAP + half };
+    const bl = { x: GRID_X - GAP - half, y: GRID_Y + GRID_H + GAP + half };
     return { tl, tr, br, bl };
   }
 
@@ -298,6 +314,7 @@
     QUIET,
     FINDER,
     GAP,
+    FOOTER,
     // --- モード ---
     MODES,
     MODE_ID,

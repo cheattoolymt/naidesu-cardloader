@@ -164,20 +164,21 @@ const crypto = require('crypto');
 const rand = (n) => new Uint8Array(crypto.randomBytes(n));
 
 (async () => {
-  // 全モードを実 JPEG(0.9) 経由で検証。特に 3KB の高密度セル(0.98mm)が
-  // JPEG 圧縮を経ても 300dpi 相当で安定して読めることを重点確認する。
+  // 全モードを実 JPEG(0.9) 経由で検証。特に最高密度の 4KB モード
+  // (1セル ≈ 1.06mm)が JPEG 圧縮を経ても 300dpi 相当で安定して読めることを
+  // 重点確認する。ページ全高を使う新レイアウトでも、4096B が1枚に収まる。
   //
   // ※ セルサイズの読み取り安定性は「1ページ内の話」なので、ここでは
-  //   1ページで完結するケースのみを実 JPEG で検証する。複数ページ分割
-  //   (4KB→3kb で 2 枚 など)の結合ロジックは roundtrip / autodetect
-  //   テストで byte-exact を確認済み。
+  //   1ページで完結するケースのみを実 JPEG で検証する。複数ページ分割の
+  //   結合ロジックは roundtrip / autodetect テストで byte-exact を確認済み。
   //   (フルサイズ Canvas を複数枚 JPEG デコードするとメモリを大量消費
   //    するため、E2E は 1 ページ描画に限定している。)
   await runCase('1KB-random', rand(1024), '1kb', true);
   await runCase('2KB-random', rand(2048), '2kb', true);
-  await runCase('3KB-text', new TextEncoder().encode('naidesu 3KB mode E2E ✓ 日本語 0123456789'), '3kb', true);
   await runCase('3KB-random', rand(3072), '3kb', true); // 3KB(3072B) をぴったり
-  await runCase('3KB-cap', rand(CF.getProfile('3kb').PAYLOAD_BYTES), '3kb', true); // 1ページ上限(全セル最密)
+  await runCase('4KB-text', new TextEncoder().encode('naidesu 4KB mode E2E ✓ 日本語 0123456789'), '4kb', true);
+  await runCase('4KB-random', rand(4096), '4kb', true); // 4KB(4096B) をぴったり1枚
+  await runCase('4KB-cap', rand(CF.getProfile('4kb').PAYLOAD_BYTES), '4kb', true); // 1ページ上限(全セル最密)
 
   if (process.exitCode) console.log('\n*** SOME JPEG-E2E TESTS FAILED ***');
   else console.log('\nALL JPEG-E2E TESTS PASSED (1-page real-JPEG cases)');
