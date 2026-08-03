@@ -5,7 +5,8 @@
  * の往復でバイナリが完全一致するか検証する。
  * ブラウザの Canvas を使わず、自前の簡易ラスタライザで検証する。
  *
- * 1KB(96x96) / 2KB(136x136) / 3KB(160x160) 各モードを検証する。
+ * 1KB(96x143) / 2KB(112x167) / 3KB(130x194) / 4KB(149x222) 各モードを検証する。
+ * グリッドはページ全高を使う共通長方形の細分。
  */
 'use strict';
 
@@ -81,26 +82,31 @@ function runTest(name, bytes, mode){
   assert(equal, `[${mode}] ${name}: byte-exact roundtrip`);
 }
 
+// 各モードの「公称容量」(KB単位) — このバイト数が1枚に収まることを確認する。
+const NOMINAL = { '1kb': 1024, '2kb': 2048, '3kb': 3072, '4kb': 4096 };
+
 for (const mode of CF.MODES) {
   const prof = CF.getProfile(mode);
+  const nominal = NOMINAL[mode];
   // 1) 小さいテキスト
   runTest('small-text', new TextEncoder().encode('Hello, naidesu-cardloader! (何もかも)ないです'), mode);
-  // 2) 各モードの公称容量ぎりぎり
-  const nearCap = mode==='3kb' ? 3071 : (mode==='2kb' ? 2047 : 1023);
-  runTest(`${nearCap}B`, crypto.getRandomValues(new Uint8Array(nearCap)), mode);
-  // 2b) 公称容量ちょうどが1枚に収まることの確認
-  if (mode==='2kb') runTest('exact-2048', crypto.getRandomValues(new Uint8Array(2048)), mode);
-  if (mode==='3kb') {
-    runTest('exact-3072', crypto.getRandomValues(new Uint8Array(3072)), mode);
-    // 4KBファイルは 3kb モードで2ページに分割されることの確認
-    runTest('4KB-file', crypto.getRandomValues(new Uint8Array(4096)), mode);
-  }
+  // 2) 公称容量ぎりぎり(1バイト手前)が1枚に収まる
+  runTest(`${nominal - 1}B`, crypto.getRandomValues(new Uint8Array(nominal - 1)), mode);
+  // 2b) 公称容量ちょうど(nKB)が1枚に収まることの確認
+  runTest(`exact-${nominal}`, crypto.getRandomValues(new Uint8Array(nominal)), mode);
   // 3) 1ページ上限ちょうど
   runTest('exact-1page', crypto.getRandomValues(new Uint8Array(prof.PAYLOAD_BYTES)), mode);
   // 4) 複数ページ (2ページ+α)
   runTest('multi-pages', crypto.getRandomValues(new Uint8Array(prof.PAYLOAD_BYTES*2 + 500)), mode);
   // 5) 空に近い
   runTest('tiny-1byte', new Uint8Array([0xA5]), mode);
+}
+
+// 公称容量が実ペイロードに収まる(=各KBが必ず1枚)ことを明示的に検証
+for (const mode of CF.MODES) {
+  const prof = CF.getProfile(mode);
+  assert(prof.PAYLOAD_BYTES >= NOMINAL[mode],
+    `[${mode}] payload ${prof.PAYLOAD_BYTES}B >= nominal ${NOMINAL[mode]}B (1枚に収まる)`);
 }
 
 console.log('\nGeometry:');
