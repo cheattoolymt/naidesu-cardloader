@@ -122,6 +122,11 @@ async function runCase(name, bytes, mode, viaJpeg){
   await runCase('2KB-random', crypto.getRandomValues(new Uint8Array(2048)), '2kb');
   await runCase('2KB-multi-2p', crypto.getRandomValues(new Uint8Array(CF.getProfile('2kb').PAYLOAD_BYTES+400)), '2kb');
   await runCase('2KB-viaJPEG', crypto.getRandomValues(new Uint8Array(2048)), '2kb', true);
+  // 3KB モード（4KB 対応の高密度）
+  await runCase('3KB-text', new TextEncoder().encode('naidesu 3KB mode ✓ 日本語 0123456789'), '3kb');
+  await runCase('3KB-random', crypto.getRandomValues(new Uint8Array(3072)), '3kb');
+  await runCase('3KB-4KBfile', crypto.getRandomValues(new Uint8Array(4096)), '3kb');
+  await runCase('3KB-viaJPEG', crypto.getRandomValues(new Uint8Array(3072)), '3kb', true);
   log(failed? `\n*** ${failed} FAILED ***`:'\nALL BROWSER E2E PASSED', failed?'fail':'ok');
   document.title = failed ? 'E2E FAIL' : 'E2E PASS';
   console.log(failed ? `E2E FAIL (${failed})` : 'E2E PASS');

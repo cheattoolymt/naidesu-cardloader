@@ -5,7 +5,7 @@
  * の往復でバイナリが完全一致するか検証する。
  * ブラウザの Canvas を使わず、自前の簡易ラスタライザで検証する。
  *
- * 1KB(96x96) / 2KB(136x136) 両モードを検証する。
+ * 1KB(96x96) / 2KB(136x136) / 3KB(160x160) 各モードを検証する。
  */
 'use strict';
 
@@ -85,10 +85,16 @@ for (const mode of CF.MODES) {
   const prof = CF.getProfile(mode);
   // 1) 小さいテキスト
   runTest('small-text', new TextEncoder().encode('Hello, naidesu-cardloader! (何もかも)ないです'), mode);
-  // 2) 1KB / 2KB ぴったり(2048)近辺
-  runTest(mode==='2kb'?'2047B':'1023B', crypto.getRandomValues(new Uint8Array(mode==='2kb'?2047:1023)), mode);
-  // 2b) 2KB 丁度(2048) が 2kb モードなら1枚に収まることの確認
+  // 2) 各モードの公称容量ぎりぎり
+  const nearCap = mode==='3kb' ? 3071 : (mode==='2kb' ? 2047 : 1023);
+  runTest(`${nearCap}B`, crypto.getRandomValues(new Uint8Array(nearCap)), mode);
+  // 2b) 公称容量ちょうどが1枚に収まることの確認
   if (mode==='2kb') runTest('exact-2048', crypto.getRandomValues(new Uint8Array(2048)), mode);
+  if (mode==='3kb') {
+    runTest('exact-3072', crypto.getRandomValues(new Uint8Array(3072)), mode);
+    // 4KBファイルは 3kb モードで2ページに分割されることの確認
+    runTest('4KB-file', crypto.getRandomValues(new Uint8Array(4096)), mode);
+  }
   // 3) 1ページ上限ちょうど
   runTest('exact-1page', crypto.getRandomValues(new Uint8Array(prof.PAYLOAD_BYTES)), mode);
   // 4) 複数ページ (2ページ+α)
