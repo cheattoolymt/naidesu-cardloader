@@ -40,6 +40,7 @@
   <h1>🔍 naidesu-cardloader — 読み取り</h1>
   <div class="sub">
     印刷したカードのスキャン画像(300dpi程度)/写真/PDF を読み込み、バイナリに復元します。
+    1KB / 2KB どちらのモードでも自動判別します。
     四隅の黒い■を自動検出 → ズレていれば赤い枠の角をドラッグして合わせます。
     <a class="homelink" href="creator.html">→ 作成(Creator)へ</a>
   </div>
@@ -99,6 +100,7 @@ function setStatus(msg, cls) { statusEl.className = 'status ' + (cls || 'info');
 let collected = {};      // key: pageIndex
 let expectedTotal = null; // totalPages
 let expectedFileLen = null;
+let expectedMode = null;  // '1kb' | '2kb'（最初に読めたページのモードで固定）
 
 /* ============ ファイル読み込み ============ */
 let pdfDoc = null, pdfPageNum = 1;
@@ -322,19 +324,19 @@ document.getElementById('autoBtn').onclick = autoDetect;
 document.getElementById('invert').onchange = () => { if (hasImage) autoDetect(); };
 
 /* ============ セル読み取り & デコード ============ */
-document.getElementById('decodeBtn').onclick = () => {
-  if (!corners) { setStatus('先に四隅を合わせてください', 'bad'); return; }
+// 指定プロファイル(グリッド密度)で四隅からセルをサンプリングして bit グリッドを得る。
+function sampleGrid(prof) {
   const data = sctx.getImageData(0, 0, src.width, src.height).data;
   const w = src.width;
   const invert = document.getElementById('invert').checked;
-  const bits = new Uint8Array(CF.COLS * CF.ROWS);
+  const bits = new Uint8Array(prof.COLS * prof.ROWS);
 
   // 各セル中心付近を 3x3 平均でサンプリング(ノイズ耐性)
-  for (let r = 0; r < CF.ROWS; r++) {
-    for (let c = 0; c < CF.COLS; c++) {
-      const T = lerp(corners[0], corners[1], (c + 0.5) / CF.COLS);
-      const B = lerp(corners[3], corners[2], (c + 0.5) / CF.COLS);
-      const pt = lerp(T, B, (r + 0.5) / CF.ROWS);
+  for (let r = 0; r < prof.ROWS; r++) {
+    for (let c = 0; c < prof.COLS; c++) {
+      const T = lerp(corners[0], corners[1], (c + 0.5) / prof.COLS);
+      const B = lerp(corners[3], corners[2], (c + 0.5) / prof.COLS);
+      const pt = lerp(T, B, (r + 0.5) / prof.ROWS);
       let acc = 0, cnt = 0;
       for (let oy = -1; oy <= 1; oy++) {
         for (let ox = -1; ox <= 1; ox++) {
@@ -347,25 +349,54 @@ document.getElementById('decodeBtn').onclick = () => {
         }
       }
       const avg = cnt ? acc / cnt : 255;
-      bits[r * CF.COLS + c] = avg < 128 ? 1 : 0; // 黒=1
+      bits[r * prof.COLS + c] = avg < 128 ? 1 : 0; // 黒=1
     }
   }
+  return bits;
+}
 
-  const { header, payload } = CF.bitGridToBytes(bits);
-  const meta = CF.parseHeader(header);
+// デコーダはモードを事前に知らないため、全モードのグリッドで試し読みし、
+// MAGIC + チェックサムが通り、かつヘッダ内モードIDと一致した結果を採用する。
+function decodeAnyMode() {
+  let lastMeta = null;
+  for (const mode of CF.MODES) {
+    const prof = CF.getProfile(mode);
+    const bits = sampleGrid(prof);
+    const { header, payload } = CF.bitGridToBytes(bits, prof);
+    const meta = CF.parseHeader(header);
+    if (!meta) continue;
+    lastMeta = meta;
+    if (!meta.checksumOk) continue;
+    // ヘッダのモードIDが、このグリッドのモードと一致していれば確定。
+    if (meta.mode === mode) {
+      return { meta, payload, prof };
+    }
+  }
+  return { meta: lastMeta, payload: null, prof: null };
+}
+
+document.getElementById('decodeBtn').onclick = () => {
+  if (!corners) { setStatus('先に四隅を合わせてください', 'bad'); return; }
+
+  const { meta, payload, prof } = decodeAnyMode();
   if (!meta) {
     setStatus('ヘッダを認識できませんでした。グリッドを合わせ直してください（MAGIC不一致）。', 'bad');
     return;
   }
-  if (!meta.checksumOk) {
-    setStatus(`ヘッダのチェックサムNG。少しズレている可能性大。角を微調整して再試行してください。\n(読めた値: page ${meta.pageIndex+1}/${meta.totalPages})`, 'bad');
+  if (!payload || !meta.checksumOk) {
+    setStatus(`ヘッダのチェックサムNG。少しズレている可能性大。角を微調整して再試行してください。\n(読めた値: mode ${meta.mode.toUpperCase()} page ${meta.pageIndex+1}/${meta.totalPages})`, 'bad');
     return;
   }
-  // 収集に反映
+  // 収集に反映（モードもページ間で一致していることを確認）
+  if (expectedMode && expectedMode !== meta.mode) {
+    setStatus(`⚠ これまでは ${expectedMode.toUpperCase()} モードのカードでした。異なるモード(${meta.mode.toUpperCase()})のカードが混在しています。リセットしてやり直してください。`, 'bad');
+    return;
+  }
+  expectedMode = meta.mode;
   expectedTotal = meta.totalPages;
   expectedFileLen = meta.totalFileLen;
   collected[meta.pageIndex] = { payload, payloadLen: meta.payloadLen, meta };
-  setStatus(`✅ page ${meta.pageIndex + 1}/${meta.totalPages} を取得（payload ${meta.payloadLen}B）`, 'ok');
+  setStatus(`✅ [${meta.mode.toUpperCase()}] page ${meta.pageIndex + 1}/${meta.totalPages} を取得（payload ${meta.payloadLen}B）`, 'ok');
   updateCollectionUI();
 };
 
@@ -392,9 +423,10 @@ function updateCollectionUI() {
   document.getElementById('exportBtn').disabled = !haveAll;
   const es = document.getElementById('exportStatus');
   es.className = 'status ' + (haveAll ? 'ok' : 'info');
+  const modeTag = expectedMode ? `[${expectedMode.toUpperCase()}] ` : '';
   es.textContent = haveAll
-    ? `全 ${expectedTotal} ページ収集完了。保存できます（合計 ${expectedFileLen}B）。`
-    : `残り ${expectedTotal - Object.keys(collected).length} ページ。次のカードを読み込んで追加してください。`;
+    ? `${modeTag}全 ${expectedTotal} ページ収集完了。保存できます（合計 ${expectedFileLen}B）。`
+    : `${modeTag}残り ${expectedTotal - Object.keys(collected).length} ページ。次のカードを読み込んで追加してください。`;
 }
 
 /* ============ 結合してエクスポート ============ */
@@ -418,7 +450,7 @@ document.getElementById('exportBtn').onclick = () => {
 };
 
 document.getElementById('resetBtn').onclick = () => {
-  collected = {}; expectedTotal = null; expectedFileLen = null;
+  collected = {}; expectedTotal = null; expectedFileLen = null; expectedMode = null;
   updateCollectionUI();
   setStatus('収集をリセットしました', 'info');
 };

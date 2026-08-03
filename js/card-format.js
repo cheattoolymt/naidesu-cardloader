@@ -6,6 +6,19 @@
  * 読み込まれ、両者が必ず同じ幾何形状・ヘッダ仕様を使うようにする。
  *
  * すべて A4 / 300dpi 前提。1bit = 1セル。
+ *
+ * ● 密度モード (2種) ------------------------------------------------
+ *   "1kb": 96 x 96 セル   -> 1140 byte/枚 (1KB を余裕で1枚)
+ *   "2kb": 136 x 136 セル -> 2295 byte/枚 (2KB=2048B を余裕で1枚)
+ *
+ *   グリッドは常に正方形セル。300dpi でのセル物理サイズは
+ *     1kb: 約 19.4px ≈ 1.64mm
+ *     2kb: 約 13.7px ≈ 1.16mm
+ *   いずれも 300dpi スキャンで安定して読めるサイズを維持している。
+ *
+ *   デコーダはモードを事前に知らなくても、両モードのグリッドで
+ *   ヘッダを試し読みし、MAGIC + チェックサムが通った方を採用する
+ *   (ヘッダにもモードIDを格納して整合を確認する)。
  * ================================================================== */
 
 (function (global) {
@@ -17,55 +30,23 @@
   const PAGE_W = Math.round(8.2677 * DPI); // 2480 px
   const PAGE_H = Math.round(11.6929 * DPI); // 3508 px
 
-  // ---- データグリッド ------------------------------------------
-  // 96 x 96 セル。各セル = 1bit。
-  //   1行目(96bit = 12byte) をヘッダに使用。
-  //   残り 95 x 96 = 9120bit = 1140byte をペイロードに使用。
-  //   -> 1ページで 1KB(1024byte) を余裕をもって格納できる。
-  const COLS = 96;
-  const ROWS = 96;
-
-  const HEADER_ROWS = 1; // 先頭1行はヘッダ
-  const HEADER_BITS = HEADER_ROWS * COLS; // 96 bit = 12 byte
-  const DATA_BITS = (ROWS - HEADER_ROWS) * COLS; // 9120 bit
-  const PAYLOAD_BYTES = Math.floor(DATA_BITS / 8); // 1140 byte / page
-
   // ---- レイアウト(px) ------------------------------------------
   // ページ余白と、四隅ファインダの外側にデータグリッドを置く。
   //   QUIET   : ページ端からの余白
   //   FINDER  : 四隅の位置合わせ用マーカー(正方形)のサイズ
   //   GAP     : ファインダとデータグリッドの隙間
+  // これらはモード非依存(全モード共通)。ファインダ幾何を共通にすることで
+  // 自動検出ロジックをモードで分岐させずに済む。
   const QUIET = 150; // px
   const FINDER = 120; // px 正方形マーカー
   const GAP = 40; // px
 
-  // グリッド外枠 (ファインダ中心を結ぶ矩形の内側)
-  // ファインダはグリッド矩形の四隅の "外側" に配置する。
-  // COLS==ROWS なので、セルを正方形にするため GRID を正方形にし、
-  // ページ上方寄せ(フッタ文字用に下側へ余白)にする。
-  const GRID_X = QUIET + FINDER + GAP;
-  const GRID_W = PAGE_W - 2 * GRID_X;
-  const GRID_H = GRID_W * (ROWS / COLS); // 正方形セル
-  const GRID_Y = QUIET + FINDER + GAP;   // 上方寄せ
-
-  const CELL_W = GRID_W / COLS;
-  const CELL_H = GRID_H / ROWS;
-
-  // ファインダマーカー中心座標 (グリッド四隅の外側)
-  // TL, TR, BR, BL の順 (時計回り)
-  function finderCenters() {
-    const half = FINDER / 2;
-    const tl = { x: GRID_X - GAP - half, y: GRID_Y - GAP - half };
-    const tr = { x: GRID_X + GRID_W + GAP + half, y: GRID_Y - GAP - half };
-    const br = { x: GRID_X + GRID_W + GAP + half, y: GRID_Y + GRID_H + GAP + half };
-    const bl = { x: GRID_X - GAP - half, y: GRID_Y + GRID_H + GAP + half };
-    return { tl, tr, br, bl };
-  }
+  const HEADER_ROWS = 1; // 先頭1行はヘッダ
 
   // ---- ヘッダ仕様 ----------------------------------------------
   // 12 byte:
   //   [0..1]  MAGIC  = 0x4E 0x43 ("NC" = Naidesu Card)
-  //   [2]     VERSION = 1
+  //   [2]     VERSION = 2  (下位4bit=version, 上位4bit=modeId)
   //   [3]     pageIndex (0-based)
   //   [4]     totalPages
   //   [5..6]  payloadLenThisPage (big-endian, このページの有効バイト数)
@@ -73,14 +54,78 @@
   //   [11]    checksum = XOR of bytes[0..10]
   const MAGIC0 = 0x4e;
   const MAGIC1 = 0x43;
-  const VERSION = 1;
+  const VERSION = 2; // 2 でモードID埋め込みに対応 (旧=1 は 1kb 固定として後方互換読取)
   const HEADER_LEN = 12;
 
-  function buildHeader(pageIndex, totalPages, payloadLenThisPage, totalFileLen) {
+  // モードID (VERSIONバイトの上位4bitに格納)
+  const MODE_ID = { '1kb': 0, '2kb': 1 };
+  const ID_MODE = { 0: '1kb', 1: '2kb' };
+
+  // ---- プロファイル(密度モード)生成 ---------------------------
+  function makeProfile(mode, cols, rows) {
+    const HEADER_BITS = HEADER_ROWS * cols;
+    const DATA_BITS = (rows - HEADER_ROWS) * cols;
+    const PAYLOAD_BYTES = Math.floor(DATA_BITS / 8);
+
+    // グリッド外枠 (ファインダ中心を結ぶ矩形の内側)
+    // cols==rows なので、セルを正方形にするため GRID を正方形にし、
+    // ページ上方寄せ(フッタ文字用に下側へ余白)にする。
+    const GRID_X = QUIET + FINDER + GAP;
+    const GRID_W = PAGE_W - 2 * GRID_X;
+    const GRID_H = GRID_W * (rows / cols); // 正方形セル
+    const GRID_Y = QUIET + FINDER + GAP; // 上方寄せ
+    const CELL_W = GRID_W / cols;
+    const CELL_H = GRID_H / rows;
+
+    return {
+      mode,
+      modeId: MODE_ID[mode],
+      COLS: cols,
+      ROWS: rows,
+      HEADER_ROWS,
+      HEADER_BITS,
+      DATA_BITS,
+      PAYLOAD_BYTES,
+      GRID_X,
+      GRID_Y,
+      GRID_W,
+      GRID_H,
+      CELL_W,
+      CELL_H,
+    };
+  }
+
+  // 1kb: 96x96 -> payload 1140B / 2kb: 136x136 -> payload 2295B
+  const PROFILES = {
+    '1kb': makeProfile('1kb', 96, 96),
+    '2kb': makeProfile('2kb', 136, 136),
+  };
+  const MODES = Object.keys(PROFILES);
+
+  function getProfile(mode) {
+    return PROFILES[mode] || PROFILES['1kb'];
+  }
+
+  // ---- ファインダ中心座標 (全モード共通・幾何はグリッド矩形依存) --
+  // グリッド矩形はモードに依らず同一(GRID_X/Y/W/H は全モード同値)なので、
+  // ファインダ位置も共通。TL, TR, BR, BL の順 (時計回り)。
+  function finderCenters() {
+    const p = PROFILES['1kb']; // GRID_* は全モード共通値
+    const half = FINDER / 2;
+    const tl = { x: p.GRID_X - GAP - half, y: p.GRID_Y - GAP - half };
+    const tr = { x: p.GRID_X + p.GRID_W + GAP + half, y: p.GRID_Y - GAP - half };
+    const br = { x: p.GRID_X + p.GRID_W + GAP + half, y: p.GRID_Y + p.GRID_H + GAP + half };
+    const bl = { x: p.GRID_X - GAP - half, y: p.GRID_Y + p.GRID_H + GAP + half };
+    return { tl, tr, br, bl };
+  }
+
+  function buildHeader(pageIndex, totalPages, payloadLenThisPage, totalFileLen, mode) {
     const h = new Uint8Array(HEADER_LEN);
+    const modeId = MODE_ID[mode] != null ? MODE_ID[mode] : 0;
     h[0] = MAGIC0;
     h[1] = MAGIC1;
-    h[2] = VERSION;
+    // version(下位4bit) + modeId(上位4bit)
+    h[2] = ((modeId & 0x0f) << 4) | (VERSION & 0x0f);
     h[3] = pageIndex & 0xff;
     h[4] = totalPages & 0xff;
     h[5] = (payloadLenThisPage >> 8) & 0xff;
@@ -101,8 +146,15 @@
     let x = 0;
     for (let i = 0; i < 11; i++) x ^= bytes[i];
     const ok = x === bytes[11];
+    const verByte = bytes[2];
+    const version = verByte & 0x0f;
+    // version>=2 は上位4bitにモードIDを持つ。version==1(旧) は 1kb 固定。
+    let modeId = version >= 2 ? (verByte >> 4) & 0x0f : 0;
+    const mode = ID_MODE[modeId] != null ? ID_MODE[modeId] : '1kb';
     return {
-      version: bytes[2],
+      version,
+      modeId,
+      mode,
       pageIndex: bytes[3],
       totalPages: bytes[4],
       payloadLen: (bytes[5] << 8) | bytes[6],
@@ -115,12 +167,13 @@
   // ---- bit <-> byte ヘルパ -------------------------------------
   // グリッドは行優先(row-major)、MSB first でビットを並べる。
   // 返す配列: 長さ COLS*ROWS の 0/1 配列。
-  function bytesToBitGrid(headerBytes, payloadBytes) {
-    const bits = new Uint8Array(COLS * ROWS);
+  function bytesToBitGrid(headerBytes, payloadBytes, prof) {
+    const p = prof || PROFILES['1kb'];
+    const bits = new Uint8Array(p.COLS * p.ROWS);
     // header -> 先頭 HEADER_BITS
-    writeBytesToBits(bits, 0, headerBytes, HEADER_BITS);
+    writeBytesToBits(bits, 0, headerBytes, p.HEADER_BITS);
     // payload -> 残り
-    writeBytesToBits(bits, HEADER_BITS, payloadBytes, DATA_BITS);
+    writeBytesToBits(bits, p.HEADER_BITS, payloadBytes, p.DATA_BITS);
     return bits;
   }
 
@@ -136,9 +189,10 @@
   }
 
   // 0/1 grid (長さ COLS*ROWS) -> {header: Uint8Array(12), payload: Uint8Array}
-  function bitGridToBytes(bits) {
-    const header = bitsToBytes(bits, 0, HEADER_BITS);
-    const payload = bitsToBytes(bits, HEADER_BITS, DATA_BITS);
+  function bitGridToBytes(bits, prof) {
+    const p = prof || PROFILES['1kb'];
+    const header = bitsToBytes(bits, 0, p.HEADER_BITS);
+    const payload = bitsToBytes(bits, p.HEADER_BITS, p.DATA_BITS);
     return { header, payload };
   }
 
@@ -189,42 +243,58 @@
   }
 
   // ファイル全体を複数ページ分の {header, payload} に分割
-  function splitFile(fileBytes) {
+  // mode: '1kb' | '2kb'（省略時は '1kb'）
+  function splitFile(fileBytes, mode) {
+    const prof = getProfile(mode);
     const total = fileBytes.length;
-    const totalPages = Math.max(1, Math.ceil(total / PAYLOAD_BYTES));
+    const totalPages = Math.max(1, Math.ceil(total / prof.PAYLOAD_BYTES));
     const pages = [];
     for (let p = 0; p < totalPages; p++) {
-      const start = p * PAYLOAD_BYTES;
-      const end = Math.min(start + PAYLOAD_BYTES, total);
+      const start = p * prof.PAYLOAD_BYTES;
+      const end = Math.min(start + prof.PAYLOAD_BYTES, total);
       const chunk = fileBytes.slice(start, end);
-      const payload = new Uint8Array(PAYLOAD_BYTES); // 0埋め
+      const payload = new Uint8Array(prof.PAYLOAD_BYTES); // 0埋め
       payload.set(chunk, 0);
-      const header = buildHeader(p, totalPages, chunk.length, total);
-      pages.push({ header, payload, payloadLen: chunk.length });
+      const header = buildHeader(p, totalPages, chunk.length, total, prof.mode);
+      pages.push({ header, payload, payloadLen: chunk.length, mode: prof.mode });
     }
     return pages;
   }
+
+  // 既定プロファイル(=1kb)のジオメトリを従来通りトップレベルにも公開し、
+  // 旧コードとの後方互換を保つ。
+  const DEFAULT = PROFILES['1kb'];
 
   global.CardFormat = {
     DPI,
     PAGE_W,
     PAGE_H,
-    COLS,
-    ROWS,
+    // --- 後方互換: 既定(1kb)のジオメトリ ---
+    COLS: DEFAULT.COLS,
+    ROWS: DEFAULT.ROWS,
     HEADER_ROWS,
-    HEADER_BITS,
-    DATA_BITS,
-    PAYLOAD_BYTES,
+    HEADER_BITS: DEFAULT.HEADER_BITS,
+    DATA_BITS: DEFAULT.DATA_BITS,
+    PAYLOAD_BYTES: DEFAULT.PAYLOAD_BYTES,
+    GRID_X: DEFAULT.GRID_X,
+    GRID_Y: DEFAULT.GRID_Y,
+    GRID_W: DEFAULT.GRID_W,
+    GRID_H: DEFAULT.GRID_H,
+    CELL_W: DEFAULT.CELL_W,
+    CELL_H: DEFAULT.CELL_H,
+    // --- 共通 ---
     HEADER_LEN,
+    VERSION,
     QUIET,
     FINDER,
     GAP,
-    GRID_X,
-    GRID_Y,
-    GRID_W,
-    GRID_H,
-    CELL_W,
-    CELL_H,
+    // --- モード ---
+    MODES,
+    MODE_ID,
+    ID_MODE,
+    PROFILES,
+    getProfile,
+    // --- 関数 ---
     finderCenters,
     otsuThreshold,
     buildHeader,

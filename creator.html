@@ -49,7 +49,14 @@
     <input type="file" id="file">
     <div class="row" style="margin-top:12px;">
       <div>
-        <label>② 出力形式</label>
+        <label>② 密度モード（1枚あたりの容量）</label>
+        <select id="mode">
+          <option value="1kb">1KB モード（96×96・大きいマスで読み取り安定・推奨）</option>
+          <option value="2kb">2KB モード（136×136・枚数を約半分に）</option>
+        </select>
+      </div>
+      <div>
+        <label>③ 出力形式</label>
         <select id="fmt">
           <option value="pdf">PDF（複数ページを1ファイルに・推奨）</option>
           <option value="png">PNG（ページごとに個別ダウンロード）</option>
@@ -58,7 +65,7 @@
       </div>
     </div>
     <div class="info" id="info">ファイル未選択</div>
-    <button id="gen" disabled>③ カードを生成してダウンロード</button>
+    <button id="gen" disabled>④ カードを生成してダウンロード</button>
   </div>
 
   <div class="panel">
@@ -76,7 +83,15 @@
 
 <script>
 const CF = window.CardFormat;
-document.getElementById('capLbl').textContent = CF.PAYLOAD_BYTES;
+
+const modeSel = document.getElementById('mode');
+function currentMode() { return modeSel.value; }
+function currentProfile() { return CF.getProfile(currentMode()); }
+
+function updateCapLabel() {
+  document.getElementById('capLbl').textContent = currentProfile().PAYLOAD_BYTES;
+}
+updateCapLabel();
 
 let fileBytes = null;
 let fileName = 'data.bin';
@@ -86,22 +101,35 @@ const infoEl = document.getElementById('info');
 const genBtn = document.getElementById('gen');
 const previewsEl = document.getElementById('previews');
 
+function rebuildPages() {
+  if (!fileBytes) return;
+  const prof = currentProfile();
+  pages = CF.splitFile(fileBytes, prof.mode);
+  infoEl.textContent =
+    `ファイル: ${fileName}\n` +
+    `サイズ: ${fileBytes.length} byte\n` +
+    `モード: ${prof.mode.toUpperCase()}（${prof.COLS}×${prof.ROWS}・1ページ ${prof.PAYLOAD_BYTES} byte）\n` +
+    `ページ数: ${pages.length}`;
+  renderPreviews();
+}
+
 document.getElementById('file').onchange = async (e) => {
   const f = e.target.files[0];
   if (!f) return;
   fileName = f.name;
   fileBytes = new Uint8Array(await f.arrayBuffer());
-  pages = CF.splitFile(fileBytes);
-  infoEl.textContent =
-    `ファイル: ${fileName}\n` +
-    `サイズ: ${fileBytes.length} byte\n` +
-    `ページ数: ${pages.length}（1ページ ${CF.PAYLOAD_BYTES} byte）`;
+  rebuildPages();
   genBtn.disabled = false;
-  renderPreviews();
+};
+
+modeSel.onchange = () => {
+  updateCapLabel();
+  rebuildPages();
 };
 
 // ---- 1ページ分をフルサイズ canvas に描画 --------------------
 function drawPage(page) {
+  const prof = CF.getProfile(page.mode);
   const cv = document.createElement('canvas');
   cv.width = CF.PAGE_W; cv.height = CF.PAGE_H;
   const ctx = cv.getContext('2d');
@@ -113,6 +141,7 @@ function drawPage(page) {
   ctx.fillStyle = '#000';
 
   // 四隅ファインダ（正方形）。TL は二重四角にして向き判定に使う。
+  // ファインダ幾何は全モード共通。
   const f = CF.finderCenters();
   const half = CF.FINDER / 2;
   drawFinder(ctx, f.tl, half, true);   // TL: 特別マーク(中に白抜き+中心黒)
@@ -121,14 +150,14 @@ function drawPage(page) {
   drawFinder(ctx, f.bl, half, false);
 
   // データセル
-  const bits = CF.bytesToBitGrid(page.header, page.payload);
-  for (let r = 0; r < CF.ROWS; r++) {
-    for (let c = 0; c < CF.COLS; c++) {
-      if (bits[r * CF.COLS + c]) {
-        const x = CF.GRID_X + c * CF.CELL_W;
-        const y = CF.GRID_Y + r * CF.CELL_H;
+  const bits = CF.bytesToBitGrid(page.header, page.payload, prof);
+  for (let r = 0; r < prof.ROWS; r++) {
+    for (let c = 0; c < prof.COLS; c++) {
+      if (bits[r * prof.COLS + c]) {
+        const x = prof.GRID_X + c * prof.CELL_W;
+        const y = prof.GRID_Y + r * prof.CELL_H;
         // わずかに内側に描いてにじみ対策
-        ctx.fillRect(x + 0.5, y + 0.5, CF.CELL_W - 1, CF.CELL_H - 1);
+        ctx.fillRect(x + 0.5, y + 0.5, prof.CELL_W - 1, prof.CELL_H - 1);
       }
     }
   }
@@ -136,7 +165,7 @@ function drawPage(page) {
   // グリッド外枠（細線・読み取り時の目安）
   ctx.strokeStyle = '#000';
   ctx.lineWidth = 2;
-  ctx.strokeRect(CF.GRID_X, CF.GRID_Y, CF.GRID_W, CF.GRID_H);
+  ctx.strokeRect(prof.GRID_X, prof.GRID_Y, prof.GRID_W, prof.GRID_H);
 
   // フッタ表記（人間可読・読み取りには使わない）
   const hdr = CF.parseHeader(page.header);
@@ -144,7 +173,7 @@ function drawPage(page) {
   ctx.font = '28px monospace';
   ctx.textAlign = 'center';
   ctx.fillText(
-    `naidesu-cardloader  page ${hdr.pageIndex + 1}/${hdr.totalPages}  ` +
+    `naidesu-cardloader  ${prof.mode.toUpperCase()}  page ${hdr.pageIndex + 1}/${hdr.totalPages}  ` +
     `payload ${hdr.payloadLen}B  total ${hdr.totalFileLen}B`,
     CF.PAGE_W / 2, CF.PAGE_H - 60
   );

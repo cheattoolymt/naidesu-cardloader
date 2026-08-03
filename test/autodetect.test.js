@@ -1,8 +1,11 @@
 /*
  * autodetect.test.js
- * デコーダの自動検出ロジック(otsu + 連結成分 + finderToGrid + セルサンプリング)を
- * Node上で再現し、レンダリング画像から角を自動検出→デコードして往復一致を検証する。
+ * デコーダの自動検出ロジック(otsu + 連結成分 + finderToGrid + セルサンプリング +
+ * 両モード試し読み)を Node上で再現し、レンダリング画像から角を自動検出→
+ * モード自動判別→デコードして往復一致を検証する。
  * これは decoder.html の実経路(理想座標ではない)をテストする。
+ *
+ * 1KB(96x96) / 2KB(136x136) 両モードを検証する。
  */
 'use strict';
 global.window = global;
@@ -11,6 +14,7 @@ const CF = global.CardFormat;
 
 // ---- ページを RGBA バッファに描画(ファインダ含む・任意の平行移動+スケール付与可) ----
 function renderPageRGBA(page, opt = {}) {
+  const prof = CF.getProfile(page.mode);
   const scale = opt.scale || 1;      // 拡大縮小(スキャナ解像度違いの模擬)
   const ox = opt.ox || 0, oy = opt.oy || 0; // 平行移動
   const W = Math.round(CF.PAGE_W * scale) + ox * 2;
@@ -27,9 +31,9 @@ function renderPageRGBA(page, opt = {}) {
     if(i===0){const q=half*0.55;fillRect(c.x-q,c.y-q,q*2,q*2,255);
               const q2=half*0.22;fillRect(c.x-q2,c.y-q2,q2*2,q2*2,0);}
   });
-  const bits=CF.bytesToBitGrid(page.header,page.payload);
-  for(let r=0;r<CF.ROWS;r++)for(let c=0;c<CF.COLS;c++){
-    if(bits[r*CF.COLS+c]) fillRect(CF.GRID_X+c*CF.CELL_W+0.5, CF.GRID_Y+r*CF.CELL_H+0.5, CF.CELL_W-1, CF.CELL_H-1, 0);
+  const bits=CF.bytesToBitGrid(page.header,page.payload,prof);
+  for(let r=0;r<prof.ROWS;r++)for(let c=0;c<prof.COLS;c++){
+    if(bits[r*prof.COLS+c]) fillRect(prof.GRID_X+c*prof.CELL_W+0.5, prof.GRID_Y+r*prof.CELL_H+0.5, prof.CELL_W-1, prof.CELL_H-1, 0);
   }
   // gray -> RGBA
   const rgba = new Uint8ClampedArray(W*H*4);
@@ -60,10 +64,11 @@ function findFinders(bin,w,h){
 }
 
 function finderToGrid(fc){
+  const p=CF.getProfile('1kb'); // GRID_* は全モード共通
   const offX=CF.GAP+CF.FINDER/2, offY=CF.GAP+CF.FINDER/2;
   const fW=((fc[1].x-fc[0].x)+(fc[2].x-fc[3].x))/2;
   const fH=((fc[3].y-fc[0].y)+(fc[2].y-fc[1].y))/2;
-  const rx=fW/(CF.GRID_W+2*offX), ry=fH/(CF.GRID_H+2*offY);
+  const rx=fW/(p.GRID_W+2*offX), ry=fH/(p.GRID_H+2*offY);
   const dx=offX*rx, dy=offY*ry;
   return [{x:fc[0].x+dx,y:fc[0].y+dy},{x:fc[1].x-dx,y:fc[1].y+dy},
           {x:fc[2].x-dx,y:fc[2].y-dy},{x:fc[3].x+dx,y:fc[3].y-dy}];
@@ -82,42 +87,61 @@ function autoDetect(img){
   return finderToGrid(corners);
 }
 
-function decodeWithCorners(img,corners){
-  const {data,width:w,height:h}=img;const bits=new Uint8Array(CF.COLS*CF.ROWS);
-  for(let r=0;r<CF.ROWS;r++)for(let c=0;c<CF.COLS;c++){
-    const T=lerp(corners[0],corners[1],(c+0.5)/CF.COLS),B=lerp(corners[3],corners[2],(c+0.5)/CF.COLS);
-    const pt=lerp(T,B,(r+0.5)/CF.ROWS);let acc=0,cnt=0;
+function sampleGrid(img,corners,prof){
+  const {data,width:w,height:h}=img;const bits=new Uint8Array(prof.COLS*prof.ROWS);
+  for(let r=0;r<prof.ROWS;r++)for(let c=0;c<prof.COLS;c++){
+    const T=lerp(corners[0],corners[1],(c+0.5)/prof.COLS),B=lerp(corners[3],corners[2],(c+0.5)/prof.COLS);
+    const pt=lerp(T,B,(r+0.5)/prof.ROWS);let acc=0,cnt=0;
     for(let oy=-1;oy<=1;oy++)for(let ox=-1;ox<=1;ox++){const xx=Math.round(pt.x+ox),yy=Math.round(pt.y+oy);
       if(xx<0||yy<0||xx>=w||yy>=h)continue;const p=(yy*w+xx)*4;
       acc+=data[p]*0.299+data[p+1]*0.587+data[p+2]*0.114;cnt++;}
-    bits[r*CF.COLS+c]=(cnt?acc/cnt:255)<128?1:0;}
-  const {header,payload}=CF.bitGridToBytes(bits);return {meta:CF.parseHeader(header),payload};
+    bits[r*prof.COLS+c]=(cnt?acc/cnt:255)<128?1:0;}
+  return bits;
+}
+
+// 両モードで試し読みし、MAGIC+checksum+modeID一致の結果を採用(decoder.html の実経路)
+function decodeAnyMode(img,corners){
+  let last=null;
+  for(const mode of CF.MODES){
+    const prof=CF.getProfile(mode);
+    const bits=sampleGrid(img,corners,prof);
+    const {header,payload}=CF.bitGridToBytes(bits,prof);
+    const meta=CF.parseHeader(header);
+    if(!meta)continue;
+    last={meta,payload:null};
+    if(!meta.checksumOk)continue;
+    if(meta.mode===mode)return {meta,payload};
+  }
+  return last||{meta:null,payload:null};
 }
 
 function assert(c,m){if(!c){console.error('FAIL:',m);process.exitCode=1;}else console.log('ok:',m);}
 
-function run(name,bytes,opt){
-  console.log(`\n=== ${name} (${bytes.length}B, opt=${JSON.stringify(opt||{})}) ===`);
-  const pages=CF.splitFile(bytes);const restored=new Uint8Array(bytes.length);let off=0,ok=true;
+function run(name,bytes,mode,opt){
+  console.log(`\n=== [${mode}] ${name} (${bytes.length}B, opt=${JSON.stringify(opt||{})}) ===`);
+  const pages=CF.splitFile(bytes,mode);const restored=new Uint8Array(bytes.length);let off=0,ok=true;
   for(const page of pages){
     const img=renderPageRGBA(page,opt);
     const corners=autoDetect(img);
     if(!corners){ok=false;console.error('autoDetect returned null');break;}
-    const {meta,payload}=decodeWithCorners(img,corners);
-    if(!meta||!meta.checksumOk){ok=false;console.error('decode failed',meta);break;}
+    const {meta,payload}=decodeAnyMode(img,corners);
+    if(!meta||!meta.checksumOk||!payload){ok=false;console.error('decode failed',meta);break;}
+    if(meta.mode!==mode){ok=false;console.error('mode mismatch',meta.mode,'!=',mode);break;}
     restored.set(payload.subarray(0,meta.payloadLen),off);off+=meta.payloadLen;
   }
-  assert(ok,`${name}: autodetect+decode ok`);
-  assert(off===bytes.length,`${name}: length ${off}==${bytes.length}`);
+  assert(ok,`[${mode}] ${name}: autodetect+mode-detect+decode ok`);
+  assert(off===bytes.length,`[${mode}] ${name}: length ${off}==${bytes.length}`);
   let eq=ok&&off===bytes.length;for(let i=0;i<bytes.length&&eq;i++)if(bytes[i]!==restored[i])eq=false;
-  assert(eq,`${name}: byte-exact via AUTO-DETECT`);
+  assert(eq,`[${mode}] ${name}: byte-exact via AUTO-DETECT`);
 }
 
-run('auto-small', new TextEncoder().encode('naidesu auto-detect test 1234567890'));
-run('auto-1KB', crypto.getRandomValues(new Uint8Array(1024)));
-run('auto-multi', crypto.getRandomValues(new Uint8Array(CF.PAYLOAD_BYTES*2+300)));
-// スキャン解像度違い(1.3x)や余白付き(平行移動)でも動くか
-run('auto-scaled', crypto.getRandomValues(new Uint8Array(900)), {scale:1.3});
-run('auto-offset', crypto.getRandomValues(new Uint8Array(700)), {ox:80, oy:120});
+for(const mode of CF.MODES){
+  run('auto-small', new TextEncoder().encode('naidesu auto-detect test 1234567890'), mode);
+  run('auto-cap', crypto.getRandomValues(new Uint8Array(mode==='2kb'?2048:1024)), mode);
+  run('auto-multi', crypto.getRandomValues(new Uint8Array(CF.getProfile(mode).PAYLOAD_BYTES*2+300)), mode);
+  // スキャン解像度違い(1.3x)や余白付き(平行移動)でも動くか
+  run('auto-scaled', crypto.getRandomValues(new Uint8Array(900)), mode, {scale:1.3});
+  run('auto-offset', crypto.getRandomValues(new Uint8Array(700)), mode, {ox:80, oy:120});
+}
 
 if(process.exitCode)console.log('\n*** SOME TESTS FAILED ***');else console.log('\nALL AUTO-DETECT TESTS PASSED');
