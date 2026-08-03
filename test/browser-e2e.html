@@ -16,16 +16,17 @@ const log = (m, cls) => { const l=document.getElementById('log'); l.innerHTML +=
 let failed = 0;
 const assert=(c,m)=>{ if(!c){failed++; log('FAIL: '+m,'fail');} else log('ok: '+m,'ok'); };
 
-// creator.html と同じ描画（フルサイズ canvas）
+// creator.html と同じ描画（フルサイズ canvas・モード対応）
 function drawPage(page){
+  const prof=CF.getProfile(page.mode);
   const cv=document.createElement('canvas'); cv.width=CF.PAGE_W; cv.height=CF.PAGE_H;
   const ctx=cv.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,cv.width,cv.height); ctx.fillStyle='#000';
   const f=CF.finderCenters(); const half=CF.FINDER/2;
   const df=(c,special)=>{ctx.fillStyle='#000';ctx.fillRect(c.x-half,c.y-half,half*2,half*2);
     if(special){const q=half*0.55;ctx.fillStyle='#fff';ctx.fillRect(c.x-q,c.y-q,q*2,q*2);const q2=half*0.22;ctx.fillStyle='#000';ctx.fillRect(c.x-q2,c.y-q2,q2*2,q2*2);}};
   df(f.tl,true);df(f.tr,false);df(f.br,false);df(f.bl,false);
-  const bits=CF.bytesToBitGrid(page.header,page.payload);
-  for(let r=0;r<CF.ROWS;r++)for(let c=0;c<CF.COLS;c++)if(bits[r*CF.COLS+c])ctx.fillRect(CF.GRID_X+c*CF.CELL_W+0.5,CF.GRID_Y+r*CF.CELL_H+0.5,CF.CELL_W-1,CF.CELL_H-1);
+  const bits=CF.bytesToBitGrid(page.header,page.payload,prof);
+  for(let r=0;r<prof.ROWS;r++)for(let c=0;c<prof.COLS;c++)if(bits[r*prof.COLS+c])ctx.fillRect(prof.GRID_X+c*prof.CELL_W+0.5,prof.GRID_Y+r*prof.CELL_H+0.5,prof.CELL_W-1,prof.CELL_H-1);
   return cv;
 }
 
@@ -49,9 +50,9 @@ function findFinders(bin,w,h){
   for(const cr of refs){let best=null,bd=Infinity,bi=-1;pool.forEach((c,i)=>{if(used.has(i))return;const d=(c.cx-cr.x)**2+(c.cy-cr.y)**2;if(d<bd){bd=d;best=c;bi=i;}});if(!best)return null;used.add(bi);chosen.push({x:best.cx,y:best.cy});}
   return chosen;
 }
-function finderToGrid(fc){const offX=CF.GAP+CF.FINDER/2,offY=CF.GAP+CF.FINDER/2;
+function finderToGrid(fc){const p=CF.getProfile('1kb');const offX=CF.GAP+CF.FINDER/2,offY=CF.GAP+CF.FINDER/2;
   const fW=((fc[1].x-fc[0].x)+(fc[2].x-fc[3].x))/2,fH=((fc[3].y-fc[0].y)+(fc[2].y-fc[1].y))/2;
-  const rx=fW/(CF.GRID_W+2*offX),ry=fH/(CF.GRID_H+2*offY);const dx=offX*rx,dy=offY*ry;
+  const rx=fW/(p.GRID_W+2*offX),ry=fH/(p.GRID_H+2*offY);const dx=offX*rx,dy=offY*ry;
   return [{x:fc[0].x+dx,y:fc[0].y+dy},{x:fc[1].x-dx,y:fc[1].y+dy},{x:fc[2].x-dx,y:fc[2].y-dy},{x:fc[3].x+dx,y:fc[3].y-dy}];}
 function autoDetect(ctx,w,h){
   const data=ctx.getImageData(0,0,w,h).data;
@@ -61,22 +62,36 @@ function autoDetect(ctx,w,h){
   const found=findFinders(bin,sw,sh);if(!found)return null;
   return finderToGrid(found.map(p=>({x:p.x*scale,y:p.y*scale})));
 }
-function decode(ctx,w,h,corners){
-  const data=ctx.getImageData(0,0,w,h).data;const bits=new Uint8Array(CF.COLS*CF.ROWS);
-  for(let r=0;r<CF.ROWS;r++)for(let c=0;c<CF.COLS;c++){
-    const T=lerp(corners[0],corners[1],(c+0.5)/CF.COLS),B=lerp(corners[3],corners[2],(c+0.5)/CF.COLS);const pt=lerp(T,B,(r+0.5)/CF.ROWS);
+function sampleGrid(ctx,w,h,corners,prof){
+  const data=ctx.getImageData(0,0,w,h).data;const bits=new Uint8Array(prof.COLS*prof.ROWS);
+  for(let r=0;r<prof.ROWS;r++)for(let c=0;c<prof.COLS;c++){
+    const T=lerp(corners[0],corners[1],(c+0.5)/prof.COLS),B=lerp(corners[3],corners[2],(c+0.5)/prof.COLS);const pt=lerp(T,B,(r+0.5)/prof.ROWS);
     let acc=0,cnt=0;for(let oy=-1;oy<=1;oy++)for(let ox=-1;ox<=1;ox++){const xx=Math.round(pt.x+ox),yy=Math.round(pt.y+oy);if(xx<0||yy<0||xx>=w||yy>=h)continue;const p=(yy*w+xx)*4;acc+=data[p]*0.299+data[p+1]*0.587+data[p+2]*0.114;cnt++;}
-    bits[r*CF.COLS+c]=(cnt?acc/cnt:255)<128?1:0;}
-  const {header,payload}=CF.bitGridToBytes(bits);return {meta:CF.parseHeader(header),payload};
+    bits[r*prof.COLS+c]=(cnt?acc/cnt:255)<128?1:0;}
+  return bits;
+}
+// 両モードで試し読みし、MAGIC+checksum+modeID一致の結果を採用
+function decode(ctx,w,h,corners){
+  let last=null;
+  for(const mode of CF.MODES){
+    const prof=CF.getProfile(mode);
+    const bits=sampleGrid(ctx,w,h,corners,prof);
+    const {header,payload}=CF.bitGridToBytes(bits,prof);
+    const meta=CF.parseHeader(header);
+    if(!meta)continue;last={meta,payload:null};
+    if(!meta.checksumOk)continue;
+    if(meta.mode===mode)return {meta,payload};
+  }
+  return last||{meta:null,payload:null};
 }
 
 async function loadViaJPEG(cv){ // 実際のJPEG圧縮を経由（劣化耐性の確認）
   return new Promise(res=>{const img=new Image();img.onload=()=>{const c=document.createElement('canvas');c.width=cv.width;c.height=cv.height;const cx=c.getContext('2d',{willReadFrequently:true});cx.drawImage(img,0,0);res(c);};img.src=cv.toDataURL('image/jpeg',0.9);});
 }
 
-async function runCase(name, bytes, viaJpeg){
-  log(`\n=== ${name} (${bytes.length}B, jpeg=${!!viaJpeg}) ===`);
-  const pages=CF.splitFile(bytes);const restored=new Uint8Array(bytes.length);let off=0,ok=true;
+async function runCase(name, bytes, mode, viaJpeg){
+  log(`\n=== [${mode}] ${name} (${bytes.length}B, jpeg=${!!viaJpeg}) ===`);
+  const pages=CF.splitFile(bytes,mode);const restored=new Uint8Array(bytes.length);let off=0,ok=true;
   for(const page of pages){
     let cv=drawPage(page);
     if(viaJpeg) cv=await loadViaJPEG(cv);
@@ -84,7 +99,8 @@ async function runCase(name, bytes, viaJpeg){
     const corners=autoDetect(ctx,cv.width,cv.height);
     if(!corners){ok=false;log('autoDetect null','fail');break;}
     const {meta,payload}=decode(ctx,cv.width,cv.height,corners);
-    if(!meta||!meta.checksumOk){ok=false;log('decode fail '+JSON.stringify(meta),'fail');break;}
+    if(!meta||!meta.checksumOk||!payload){ok=false;log('decode fail '+JSON.stringify(meta),'fail');break;}
+    if(meta.mode!==mode){ok=false;log('mode mismatch '+meta.mode+'!='+mode,'fail');break;}
     restored.set(payload.subarray(0,meta.payloadLen),off);off+=meta.payloadLen;
   }
   // サムネイル
@@ -96,12 +112,19 @@ async function runCase(name, bytes, viaJpeg){
 }
 
 (async()=>{
-  await runCase('text', new TextEncoder().encode('naidesu-cardloader browser E2E ✓ 日本語もOK 0123456789'));
-  await runCase('1KB-random', crypto.getRandomValues(new Uint8Array(1024)));
-  await runCase('multi-2p', crypto.getRandomValues(new Uint8Array(CF.PAYLOAD_BYTES+400)));
-  await runCase('1KB-viaJPEG', crypto.getRandomValues(new Uint8Array(1024)), true);
+  // 1KB モード
+  await runCase('text', new TextEncoder().encode('naidesu-cardloader browser E2E ✓ 日本語もOK 0123456789'), '1kb');
+  await runCase('1KB-random', crypto.getRandomValues(new Uint8Array(1024)), '1kb');
+  await runCase('multi-2p', crypto.getRandomValues(new Uint8Array(CF.getProfile('1kb').PAYLOAD_BYTES+400)), '1kb');
+  await runCase('1KB-viaJPEG', crypto.getRandomValues(new Uint8Array(1024)), '1kb', true);
+  // 2KB モード
+  await runCase('2KB-text', new TextEncoder().encode('naidesu 2KB mode ✓ 日本語 0123456789'), '2kb');
+  await runCase('2KB-random', crypto.getRandomValues(new Uint8Array(2048)), '2kb');
+  await runCase('2KB-multi-2p', crypto.getRandomValues(new Uint8Array(CF.getProfile('2kb').PAYLOAD_BYTES+400)), '2kb');
+  await runCase('2KB-viaJPEG', crypto.getRandomValues(new Uint8Array(2048)), '2kb', true);
   log(failed? `\n*** ${failed} FAILED ***`:'\nALL BROWSER E2E PASSED', failed?'fail':'ok');
   document.title = failed ? 'E2E FAIL' : 'E2E PASS';
+  console.log(failed ? `E2E FAIL (${failed})` : 'E2E PASS');
 })();
 </script>
 </body>
