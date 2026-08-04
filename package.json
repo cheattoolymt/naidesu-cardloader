@@ -1,12 +1,12 @@
 {
   "name": "naidesu-cardloader",
   "version": "1.0.0",
-  "description": "バイナリ ⇄ 紙のパンチカード変換ツール (A4 / 300dpi)。1KB / 2KB / 3KB 密度モード対応。",
+  "description": "バイナリ ⇄ 紙のパンチカード変換ツール (A4 / 300dpi)。1KB〜5KB 密度モード + リードソロモン誤り訂正(段階選択)対応。",
   "license": "MIT",
   "private": true,
   "scripts": {
     "test": "node test/roundtrip.test.js && node test/autodetect.test.js",
-    "test:jpeg": "node test/jpeg-e2e.node.js"
+    "test:jpeg": "node --expose-gc test/jpeg-e2e.node.js"
   },
   "devDependencies": {
     "canvas": "^3.2.3"

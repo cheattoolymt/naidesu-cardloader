@@ -5,10 +5,11 @@
  * モード自動判別→デコードして往復一致を検証する。
  * これは decoder.html の実経路(理想座標ではない)をテストする。
  *
- * 1KB(96x143) / 2KB(112x167) / 3KB(130x194) / 4KB(149x222) 各モードを検証する。
+ * 1KB / 2KB / 3KB / 4KB / 5KB 各モード × 誤り訂正(ECC) レベルを検証する。
  */
 'use strict';
 global.window = global;
+require('../js/reed-solomon.js');
 require('../js/card-format.js');
 const CF = global.CardFormat;
 
@@ -32,6 +33,8 @@ function renderPageRGBA(page, opt = {}) {
               const q2=half*0.22;fillRect(c.x-q2,c.y-q2,q2*2,q2*2,0);}
   });
   const bits=CF.bytesToBitGrid(page.header,page.payload,prof);
+  // データセルを opt.flips 個だけ反転して「スキャン誤り」を模擬する
+  if(opt.flips){ const ds=prof.HEADER_BITS; for(let i=0;i<opt.flips;i++){const idx=ds+((i*4099+37)%(bits.length-ds));bits[idx]^=1;} }
   for(let r=0;r<prof.ROWS;r++)for(let c=0;c<prof.COLS;c++){
     if(bits[r*prof.COLS+c]) fillRect(prof.GRID_X+c*prof.CELL_W+0.5, prof.GRID_Y+r*prof.CELL_H+0.5, prof.CELL_W-1, prof.CELL_H-1, 0);
   }
@@ -99,7 +102,8 @@ function sampleGrid(img,corners,prof){
   return bits;
 }
 
-// 両モードで試し読みし、MAGIC+checksum+modeID一致の結果を採用(decoder.html の実経路)
+// 全モードで試し読みし、MAGIC+checksum+modeID一致の結果を採用(decoder.html の実経路)。
+// ヘッダの eccLevel で本文を RS デコードして誤りを訂正する。
 function decodeAnyMode(img,corners){
   let last=null;
   for(const mode of CF.MODES){
@@ -108,43 +112,52 @@ function decodeAnyMode(img,corners){
     const {header,payload}=CF.bitGridToBytes(bits,prof);
     const meta=CF.parseHeader(header);
     if(!meta)continue;
-    last={meta,payload:null};
+    last={meta,dec:null};
     if(!meta.checksumOk)continue;
-    if(meta.mode===mode)return {meta,payload};
+    if(meta.mode===mode){
+      const dec=CF.decodePayload(payload,meta.eccLevel,meta.payloadLen);
+      return {meta,dec};
+    }
   }
-  return last||{meta:null,payload:null};
+  return last||{meta:null,dec:null};
 }
 
 function assert(c,m){if(!c){console.error('FAIL:',m);process.exitCode=1;}else console.log('ok:',m);}
 
-function run(name,bytes,mode,opt){
-  console.log(`\n=== [${mode}] ${name} (${bytes.length}B, opt=${JSON.stringify(opt||{})}) ===`);
-  const pages=CF.splitFile(bytes,mode);const restored=new Uint8Array(bytes.length);let off=0,ok=true;
+function run(name,bytes,mode,ecc,opt){
+  ecc=ecc||0; opt=opt||{};
+  const pages=CF.splitFile(bytes,mode,ecc);const restored=new Uint8Array(bytes.length);let off=0,ok=true,corr=0;
   for(const page of pages){
     const img=renderPageRGBA(page,opt);
     const corners=autoDetect(img);
     if(!corners){ok=false;console.error('autoDetect returned null');break;}
-    const {meta,payload}=decodeAnyMode(img,corners);
-    if(!meta||!meta.checksumOk||!payload){ok=false;console.error('decode failed',meta);break;}
+    const {meta,dec}=decodeAnyMode(img,corners);
+    if(!meta||!meta.checksumOk||!dec||!dec.ok){ok=false;console.error('decode failed',meta&&meta.mode,dec&&dec.ok);break;}
     if(meta.mode!==mode){ok=false;console.error('mode mismatch',meta.mode,'!=',mode);break;}
-    restored.set(payload.subarray(0,meta.payloadLen),off);off+=meta.payloadLen;
+    if(meta.eccLevel!==ecc){ok=false;console.error('ecc mismatch',meta.eccLevel,'!=',ecc);break;}
+    corr+=dec.corrected;
+    restored.set(dec.data.subarray(0,meta.payloadLen),off);off+=meta.payloadLen;
   }
-  assert(ok,`[${mode}] ${name}: autodetect+mode-detect+decode ok`);
-  assert(off===bytes.length,`[${mode}] ${name}: length ${off}==${bytes.length}`);
+  assert(ok,`[${mode} ecc=${ecc}] ${name}: autodetect+mode/ecc-detect+RS-decode ok`);
+  assert(off===bytes.length,`[${mode} ecc=${ecc}] ${name}: length ${off}==${bytes.length}`);
   let eq=ok&&off===bytes.length;for(let i=0;i<bytes.length&&eq;i++)if(bytes[i]!==restored[i])eq=false;
-  assert(eq,`[${mode}] ${name}: byte-exact via AUTO-DETECT`);
+  assert(eq,`[${mode} ecc=${ecc}] ${name}: corrected=${corr} byte-exact via AUTO-DETECT`);
 }
 
-const NOMINAL = { '1kb': 1024, '2kb': 2048, '3kb': 3072, '4kb': 4096 };
-
 for(const mode of CF.MODES){
-  run('auto-small', new TextEncoder().encode('naidesu auto-detect test 1234567890'), mode);
-  // 公称容量(nKB)が1枚で自動検出・自動判別できるか
-  run('auto-cap', crypto.getRandomValues(new Uint8Array(NOMINAL[mode])), mode);
-  run('auto-multi', crypto.getRandomValues(new Uint8Array(CF.getProfile(mode).PAYLOAD_BYTES*2+300)), mode);
-  // スキャン解像度違い(1.3x)や余白付き(平行移動)でも動くか
-  run('auto-scaled', crypto.getRandomValues(new Uint8Array(900)), mode, {scale:1.3});
-  run('auto-offset', crypto.getRandomValues(new Uint8Array(700)), mode, {ox:80, oy:120});
+  for(const ecc of [0,1,2,3]){
+    run('auto-small', new TextEncoder().encode('naidesu auto-detect test 1234567890'), mode, ecc);
+    // 正味容量ちょうどが1枚で自動検出・モード/ECC自動判別できるか
+    run('auto-cap', crypto.getRandomValues(new Uint8Array(CF.netPayload(mode,ecc))), mode, ecc);
+    run('auto-multi', crypto.getRandomValues(new Uint8Array(CF.netPayload(mode,ecc)*2+200)), mode, ecc);
+    // スキャン解像度違い(1.3x)や余白付き(平行移動)でも動くか
+    run('auto-scaled', crypto.getRandomValues(new Uint8Array(700)), mode, ecc, {scale:1.3});
+    run('auto-offset', crypto.getRandomValues(new Uint8Array(600)), mode, ecc, {ox:80, oy:120});
+  }
+  // 汚れ耐性: ECC>0 なら自動検出経路でも反転セルを訂正して復元できる
+  for(const ecc of [1,2,3]){
+    run('auto-dirty', crypto.getRandomValues(new Uint8Array(500)), mode, ecc, {flips: ecc*20});
+  }
 }
 
 if(process.exitCode)console.log('\n*** SOME TESTS FAILED ***');else console.log('\nALL AUTO-DETECT TESTS PASSED');

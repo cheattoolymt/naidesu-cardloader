@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>naidesu-cardloader — カード作成 (Creator)</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="js/reed-solomon.js"></script>
 <script src="js/card-format.js"></script>
 <style>
   :root { --accent:#2563eb; --ok:#16a34a; --bg:#0f172a; --card:#1e293b; --line:#334155; }
@@ -40,7 +41,8 @@
   <h1>📇 naidesu-cardloader — カード作成</h1>
   <div class="sub">
     バイナリ(どんなファイルでも) → A4/300dpi の「パンチカード」画像に変換して印刷します。<br>
-    1ページ最大 <b id="capLbl"></b> バイト。超える場合は自動で複数ページに分割します。
+    1ページの正味容量 <b id="capLbl"></b> バイト（誤り訂正のパリティを除いた分）。超える場合は自動で複数ページに分割します。<br>
+    <span id="eccLbl" style="color:#93c5fd"></span>
     <a class="homelink" href="decoder.html">→ 読み取り(Decoder)へ</a>
   </div>
 
@@ -49,16 +51,26 @@
     <input type="file" id="file">
     <div class="row" style="margin-top:12px;">
       <div>
-        <label>② 密度モード（1枚あたりの容量）</label>
+        <label>② 密度モード（1枚あたりのグロス容量）</label>
         <select id="mode">
           <option value="1kb">1KB モード（96×143・大きいマスで読み取り安定・推奨）</option>
           <option value="2kb">2KB モード（112×167・枚数を減らす）</option>
           <option value="3kb">3KB モード（130×194・高密度）</option>
           <option value="4kb">4KB モード（149×222・4KBファイルも1枚に集約）</option>
+          <option value="5kb">5KB モード（170×254・ページ全面を極限活用・最高密度）</option>
         </select>
       </div>
       <div>
-        <label>③ 出力形式</label>
+        <label>③ 誤り訂正（汚れ・かすれ耐性）</label>
+        <select id="ecc">
+          <option value="0">なし（訂正0%・最大容量）</option>
+          <option value="1">低（パリティ約10%・~5%のマス誤りを訂正）</option>
+          <option value="2" selected>中（パリティ約20%・~10%のマス誤りを訂正・推奨）</option>
+          <option value="3">高（パリティ約30%・~15%のマス誤りを訂正・最も頑健）</option>
+        </select>
+      </div>
+      <div>
+        <label>④ 出力形式</label>
         <select id="fmt">
           <option value="pdf">PDF（複数ページを1ファイルに・推奨）</option>
           <option value="png">PNG（ページごとに個別ダウンロード）</option>
@@ -67,7 +79,7 @@
       </div>
     </div>
     <div class="info" id="info">ファイル未選択</div>
-    <button id="gen" disabled>④ カードを生成してダウンロード</button>
+    <button id="gen" disabled>⑤ カードを生成してダウンロード</button>
   </div>
 
   <div class="panel">
@@ -87,11 +99,28 @@
 const CF = window.CardFormat;
 
 const modeSel = document.getElementById('mode');
+const eccSel = document.getElementById('ecc');
 function currentMode() { return modeSel.value; }
+function currentEcc() { return parseInt(eccSel.value, 10) || 0; }
 function currentProfile() { return CF.getProfile(currentMode()); }
 
 function updateCapLabel() {
-  document.getElementById('capLbl').textContent = currentProfile().PAYLOAD_BYTES;
+  const prof = currentProfile();
+  const ecc = currentEcc();
+  const net = CF.netPayload(prof.mode, ecc);
+  document.getElementById('capLbl').textContent = net;
+  const lv = CF.ECC_LEVELS[ecc];
+  const nsym = CF.eccNsym(ecc);
+  const grossKB = (prof.PAYLOAD_BYTES / 1024).toFixed(1);
+  let msg;
+  if (ecc === 0) {
+    msg = `誤り訂正: なし（グロス ${prof.PAYLOAD_BYTES}B ≒ ${grossKB}KB をそのまま使用）。`;
+  } else {
+    const tPerBlock = nsym >> 1;
+    msg = `誤り訂正: ${lv.label}（ブロック(最大255B)ごとに ${nsym}B のパリティ＝最大 ${tPerBlock}B/ブロックの誤りを訂正）。` +
+          `グロス ${prof.PAYLOAD_BYTES}B のうち正味 ${net}B をデータに使用。`;
+  }
+  document.getElementById('eccLbl').textContent = msg;
 }
 updateCapLabel();
 
@@ -106,11 +135,15 @@ const previewsEl = document.getElementById('previews');
 function rebuildPages() {
   if (!fileBytes) return;
   const prof = currentProfile();
-  pages = CF.splitFile(fileBytes, prof.mode);
+  const ecc = currentEcc();
+  const net = CF.netPayload(prof.mode, ecc);
+  pages = CF.splitFile(fileBytes, prof.mode, ecc);
+  const eccLv = CF.ECC_LEVELS[ecc];
   infoEl.textContent =
     `ファイル: ${fileName}\n` +
     `サイズ: ${fileBytes.length} byte\n` +
-    `モード: ${prof.mode.toUpperCase()}（${prof.COLS}×${prof.ROWS}・1ページ ${prof.PAYLOAD_BYTES} byte）\n` +
+    `モード: ${prof.mode.toUpperCase()}（${prof.COLS}×${prof.ROWS}・グロス ${prof.PAYLOAD_BYTES} byte/枚）\n` +
+    `誤り訂正: ${eccLv.label}（正味 ${net} byte/枚）\n` +
     `ページ数: ${pages.length}`;
   renderPreviews();
 }
@@ -125,6 +158,10 @@ document.getElementById('file').onchange = async (e) => {
 };
 
 modeSel.onchange = () => {
+  updateCapLabel();
+  rebuildPages();
+};
+eccSel.onchange = () => {
   updateCapLabel();
   rebuildPages();
 };
@@ -171,11 +208,12 @@ function drawPage(page) {
 
   // フッタ表記（人間可読・読み取りには使わない）
   const hdr = CF.parseHeader(page.header);
+  const eccName = (CF.ECC_LEVELS[hdr.eccLevel] || CF.ECC_LEVELS[0]).key.toUpperCase();
   ctx.fillStyle = '#000';
   ctx.font = '28px monospace';
   ctx.textAlign = 'center';
   ctx.fillText(
-    `naidesu-cardloader  ${prof.mode.toUpperCase()}  page ${hdr.pageIndex + 1}/${hdr.totalPages}  ` +
+    `naidesu-cardloader  ${prof.mode.toUpperCase()}  ECC:${eccName}  page ${hdr.pageIndex + 1}/${hdr.totalPages}  ` +
     `payload ${hdr.payloadLen}B  total ${hdr.totalFileLen}B`,
     CF.PAGE_W / 2, CF.PAGE_H - 60
   );
