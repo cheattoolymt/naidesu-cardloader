@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><title>compress E2E</title>
+<script src="../js/vendor/pako.min.js"></script>
+<script src="../js/reed-solomon.js"></script>
+<script src="../js/card-format.js"></script>
+<script src="../js/compress.js"></script>
+</head><body><pre id="out">running...</pre>
+<script>
+// 実 Canvas 描画 → 実サンプリング → 結合 → autoDecompress の完全往復。
+// creator/decoder と同じ幾何・同じ compress パイプラインを再現する。
+const CF = window.CardFormat, CZ = window.NaidesuCompress;
+function drawPage(page) {
+  const prof = CF.getProfile(page.mode);
+  const cv = document.createElement('canvas');
+  cv.width = CF.PAGE_W; cv.height = CF.PAGE_H;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.fillStyle = '#000';
+  const f = CF.finderCenters(); const half = CF.FINDER/2;
+  const df = (c, sp) => { ctx.fillStyle='#000'; ctx.fillRect(c.x-half,c.y-half,half*2,half*2);
+    if (sp){const q=half*0.55;ctx.fillStyle='#fff';ctx.fillRect(c.x-q,c.y-q,q*2,q*2);
+            const q2=half*0.22;ctx.fillStyle='#000';ctx.fillRect(c.x-q2,c.y-q2,q2*2,q2*2);} };
+  df(f.tl,true); df(f.tr,false); df(f.br,false); df(f.bl,false);
+  const bits = CF.bytesToBitGrid(page.header, page.payload, prof);
+  for (let r=0;r<prof.ROWS;r++) for(let c=0;c<prof.COLS;c++)
+    if (bits[r*prof.COLS+c]) ctx.fillRect(prof.GRID_X+c*prof.CELL_W+0.5, prof.GRID_Y+r*prof.CELL_H+0.5, prof.CELL_W-1, prof.CELL_H-1);
+  return cv;
+}
+function sampleGrid(ctx, W, H, prof, corners) {
+  const data = ctx.getImageData(0,0,W,H).data;
+  const bits = new Uint8Array(prof.COLS*prof.ROWS);
+  const lerp=(p1,p2,t)=>({x:p1.x+(p2.x-p1.x)*t,y:p1.y+(p2.y-p1.y)*t});
+  for (let r=0;r<prof.ROWS;r++) for(let c=0;c<prof.COLS;c++){
+    const T=lerp(corners[0],corners[1],(c+0.5)/prof.COLS), B=lerp(corners[3],corners[2],(c+0.5)/prof.COLS);
+    const pt=lerp(T,B,(r+0.5)/prof.ROWS);
+    const x=Math.round(pt.x), y=Math.round(pt.y); const p=(y*W+x)*4;
+    const g=data[p]*0.299+data[p+1]*0.587+data[p+2]*0.114;
+    bits[r*prof.COLS+c]=g<128?1:0;
+  }
+  return bits;
+}
+function cardRoundtrip(cardBytes, mode, ecc) {
+  const pages = CF.splitFile(cardBytes, mode, ecc);
+  const total = CF.parseHeader(pages[0].header).totalFileLen;
+  const out = new Uint8Array(total); let off=0;
+  for (const page of pages) {
+    const cv = drawPage(page);
+    const prof = CF.getProfile(page.mode);
+    const corners = [
+      {x:prof.GRID_X, y:prof.GRID_Y},
+      {x:prof.GRID_X+prof.GRID_W, y:prof.GRID_Y},
+      {x:prof.GRID_X+prof.GRID_W, y:prof.GRID_Y+prof.GRID_H},
+      {x:prof.GRID_X, y:prof.GRID_Y+prof.GRID_H},
+    ];
+    const bits = sampleGrid(cv.getContext('2d'), cv.width, cv.height, prof, corners);
+    const { header, payload } = CF.bitGridToBytes(bits, prof);
+    const meta = CF.parseHeader(header);
+    if (!meta || !meta.checksumOk) return null;
+    const dec = CF.decodePayload(payload, meta.eccLevel, meta.payloadLen);
+    if (!dec.ok) return null;
+    out.set(dec.data.subarray(0, meta.payloadLen), off); off += meta.payloadLen;
+  }
+  return out;
+}
+(async () => {
+  const out = document.getElementById('out'); out.textContent='compress E2E (real canvas)\n';
+  const log=(m)=>{out.textContent+='\n'+m; console.log(m);};
+  const enc = new TextEncoder();
+  const cases = {
+    ja: enc.encode('これはテストです。ありがとうございます。'.repeat(5)),
+    html: enc.encode('<!DOCTYPE html><html><body><p>圧縮テスト</p></body></html>'.repeat(3)),
+    rand: (()=>{const b=new Uint8Array(1200);crypto.getRandomValues(b);return b;})(),
+  };
+  let allOk=true;
+  for (const [name, bytes] of Object.entries(cases)) {
+    const comp = await CZ.compress(bytes);
+    for (const mode of ['1kb','5kb']) for (const ecc of [0,2]) {
+      const carded = cardRoundtrip(comp.container, mode, ecc);
+      if (!carded) { log(`${name}/${mode}/ecc${ecc}: CARD FAIL`); allOk=false; continue; }
+      const back = await CZ.autoDecompress(carded);
+      const eq = back.data.length===bytes.length && back.data.every((v,i)=>v===bytes[i]);
+      allOk = allOk && eq;
+      log(`${name}/${mode}/ecc${ecc}: ${bytes.length}B->${comp.compLen}B[${comp.methodName}] e2e=${eq?'OK':'FAIL'}`);
+    }
+  }
+  log(allOk?'E2E PASS':'E2E FAIL');
+  document.title = allOk?'E2E PASS':'E2E FAIL';
+})().catch(e=>{document.getElementById('out').textContent+='\nERROR:'+e.message+'\n'+e.stack; document.title='E2E ERROR';});
+</script></body></html>

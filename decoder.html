@@ -5,8 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>naidesu-cardloader — 読み取り (Decoder)</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="js/vendor/pako.min.js"></script>
 <script src="js/reed-solomon.js"></script>
 <script src="js/card-format.js"></script>
+<script src="js/compress.js"></script>
 <style>
   :root { --accent:#2563eb; --ok:#16a34a; --warn:#f59e0b; --bad:#dc2626; --bg:#0f172a; --card:#1e293b; --line:#334155; }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
@@ -443,8 +445,10 @@ function updateCollectionUI() {
 }
 
 /* ============ 結合してエクスポート ============ */
-document.getElementById('exportBtn').onclick = () => {
+const CZ = window.NaidesuCompress;
+document.getElementById('exportBtn').onclick = async () => {
   if (expectedTotal == null) return;
+  // 1) 全ページのペイロードを結合（= creator が splitFile に渡したバイト列）
   const out = new Uint8Array(expectedFileLen);
   let off = 0;
   for (let i = 0; i < expectedTotal; i++) {
@@ -454,7 +458,29 @@ document.getElementById('exportBtn').onclick = () => {
     out.set(c.payload.subarray(0, len), off);
     off += len;
   }
-  const blob = new Blob([out], { type: 'application/octet-stream' });
+
+  // 2) 圧縮コンテナか自動判別 → 圧縮されていれば自動展開（破損検知付き）
+  let finalBytes = out;
+  const es = document.getElementById('exportStatus');
+  if (CZ && CZ.isContainer(out)) {
+    try {
+      const r = await CZ.autoDecompress(out);
+      finalBytes = r.data;
+      es.className = 'status ok';
+      es.textContent = r.wasCompressed
+        ? `🗜️ 圧縮を自動検出 → ${r.methodName} で展開しました（${out.length}B → ${finalBytes.length}B）。ファイルを保存します。`
+        : `圧縮コンテナ（無圧縮/STORE）を検出。${finalBytes.length}B を保存します。`;
+    } catch (e) {
+      setStatus(`⚠ 圧縮データの展開に失敗しました（${e.message}）。ページの読み取りにズレ・誤りが残っている可能性があります。角を微調整して再取得してください。`, 'bad');
+      return;
+    }
+  } else {
+    es.className = 'status ok';
+    es.textContent = `無圧縮データとして ${finalBytes.length}B を保存します。`;
+  }
+
+  // 3) 保存
+  const blob = new Blob([finalBytes], { type: 'application/octet-stream' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = 'restored_naidesu.bin';
