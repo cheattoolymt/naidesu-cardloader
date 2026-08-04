@@ -1,7 +1,7 @@
 {
   "name": "naidesu-cardloader",
   "version": "1.0.0",
-  "description": "バイナリ ⇄ 紙のパンチカード変換ツール (A4 / 300dpi)。1KB〜5KB 密度モード + リードソロモン誤り訂正(段階選択)対応。",
+  "description": "バイナリ ⇄ 紙のパンチカード変換ツール (A4 / 300dpi)。余白削減で A4 を使い切り 1KB〜8KB(最大8176B/枚) 密度モード + リードソロモン誤り訂正(段階選択)対応。",
   "license": "MIT",
   "private": true,
   "scripts": {

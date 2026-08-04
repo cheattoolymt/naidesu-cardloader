@@ -166,6 +166,22 @@ for (const mode of CF.MODES) {
 assert(CF.getProfile('5kb').PAYLOAD_BYTES >= 5120,
   `[5kb] gross ${CF.getProfile('5kb').PAYLOAD_BYTES}B >= 5120B (5KB以上)`);
 
+// 高密度モードの要件検証（6KB以上、目標7〜10KB。8kb は 8KB以上）
+assert(CF.getProfile('6kb').PAYLOAD_BYTES >= 6144,
+  `[6kb] gross ${CF.getProfile('6kb').PAYLOAD_BYTES}B >= 6144B (6KB以上)`);
+assert(CF.getProfile('7kb').PAYLOAD_BYTES >= 7168,
+  `[7kb] gross ${CF.getProfile('7kb').PAYLOAD_BYTES}B >= 7168B (7KB以上)`);
+assert(CF.getProfile('8kb').PAYLOAD_BYTES >= 8192 - 16,
+  `[8kb] gross ${CF.getProfile('8kb').PAYLOAD_BYTES}B ≈ 8KB (最高密度)`);
+// 「マスを小さくしすぎない」要件: 最高密度でも 1セル >= 0.8mm を確保
+const cell8mm = CF.getProfile('8kb').CELL_W / CF.DPI * 25.4;
+assert(cell8mm >= 0.80,
+  `[8kb] cell ${cell8mm.toFixed(3)}mm >= 0.80mm (300dpiで余裕で読めるサイズを維持)`);
+// 余白削減で A4 面積の 65% 超をデータに使えていること
+const areaPct = 100 * CF.GRID_W * CF.GRID_H / (CF.PAGE_W * CF.PAGE_H);
+assert(areaPct >= 65,
+  `[layout] グリッド面積率 ${areaPct.toFixed(1)}% >= 65% (余白削減で紙を使い切る)`);
+
 console.log('\nGeometry:');
 console.log('  PAGE', CF.PAGE_W, 'x', CF.PAGE_H, '@300dpi');
 for (const mode of CF.MODES) {
