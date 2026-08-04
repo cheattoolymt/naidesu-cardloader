@@ -142,7 +142,7 @@ const cases = [
   }
 
   console.log('\n=== 3) 圧縮ON でのカード全往復 (compress→カード→復元→展開) ===');
-  const MODES = ['1kb', '5kb']; // 代表(最大/最小密度)
+  const MODES = ['1kb', '5kb', '8kb']; // 代表(最小/中/最高密度)
   const ECCS = [0, 2, 3];
   for (const t of cases) {
     const comp = await CZ.compress(t.bytes);

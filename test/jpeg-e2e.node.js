@@ -187,13 +187,19 @@ const rand = (n) => new Uint8Array(crypto.randomBytes(n));
   // roundtrip / autodetect の汚れ注入テストで網羅済み)。ケース間で明示的に GC する。
   const gc = () => { if (global.gc) global.gc(); };
 
-  // 1) 最高密度 5KB のグロス上限が JPEG を経ても読めること(5KB以上を1枚に)
+  // 1) 5KB のグロス上限が JPEG を経ても読めること(5KB以上を1枚に)
   await runCase('5KB-cap', rand(CF.getProfile('5kb').PAYLOAD_BYTES), '5kb', 0, true); gc();
 
   // 2) 誤り訂正(ECC)ありで、5KB の正味容量が JPEG を経ても復元できること
   //    (JPEG のにじみ/圧縮ノイズを ECC が吸収することを確認)
   await runCase('5KB-ecc-med', rand(CF.netPayload('5kb', 2)), '5kb', 2, true); gc();
-  await runCase('5KB-ecc-text', new TextEncoder().encode('naidesu 5KB + ECC E2E ✓ 日本語 0123456789'), '5kb', 2, true); gc();
+
+  // 3) 【新設・最重要】最高密度 8KB(1セル 0.81mm)が JPEG(0.9) を経ても
+  //    ECC(中) 込みで byte-exact 復元できること。高密度化の妥当性を実証する。
+  await runCase('8KB-ecc-med', rand(CF.netPayload('8kb', 2)), '8kb', 2, true); gc();
+  //    6KB(旧5KBと同じ 0.94mm セル・6KB超) は ECC なしでも JPEG を通せること
+  await runCase('6KB-cap', rand(CF.getProfile('6kb').PAYLOAD_BYTES), '6kb', 0, true); gc();
+  await runCase('8KB-ecc-text', new TextEncoder().encode('naidesu 8KB + ECC E2E ✓ 日本語 0123456789'), '8kb', 2, true); gc();
 
   if (process.exitCode) console.log('\n*** SOME JPEG-E2E TESTS FAILED ***');
   else console.log('\nALL JPEG-E2E TESTS PASSED (1-page real-JPEG cases)');
