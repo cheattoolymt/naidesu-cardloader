@@ -5,8 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>naidesu-cardloader — カード作成 (Creator)</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="js/vendor/pako.min.js"></script>
 <script src="js/reed-solomon.js"></script>
 <script src="js/card-format.js"></script>
+<script src="js/compress.js"></script>
 <style>
   :root { --accent:#2563eb; --ok:#16a34a; --bg:#0f172a; --card:#1e293b; --line:#334155; }
   * { box-sizing:border-box; }
@@ -33,6 +35,9 @@
   .previews figcaption { color:#0f172a; font-size:.7rem; text-align:center; margin-top:4px; }
   code { background:#0b1220; padding:2px 6px; border-radius:5px; }
   a.homelink { color:#93c5fd; font-size:.85rem; }
+  label.chk { display:flex; align-items:center; gap:8px; font-size:.9rem; color:#cbd5e1; margin:.4rem 0 .2rem; }
+  label.chk input { width:auto; }
+  .hint { font-size:.78rem; color:#94a3b8; margin:4px 0 6px; }
 </style>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22><text y=%2214%22 font-size=%2214%22>📇</text></svg>">
 </head>
@@ -77,6 +82,15 @@
           <option value="jpg">JPG（ページごとに個別ダウンロード）</option>
         </select>
       </div>
+    </div>
+    <label class="chk" style="margin-top:12px;">
+      <input type="checkbox" id="compress" checked>
+      <span>🗜️ 圧縮する（チェックだけでOK・限界まで自動圧縮。読み取り側は自動で展開します）</span>
+    </label>
+    <div class="hint" id="compressHint">
+      テキスト/JSON/HTML などは deflate・gzip・brotli・<b>日本語辞書付き deflate</b> の中から
+      最小になる方式を自動選択します。バイナリは可逆な範囲で最も縮む方式を選び、
+      縮まない場合は自動的に無圧縮（STORE）にフォールバックするので<b>破損しません</b>。
     </div>
     <div class="info" id="info">ファイル未選択</div>
     <button id="gen" disabled>⑤ カードを生成してダウンロード</button>
@@ -124,28 +138,63 @@ function updateCapLabel() {
 }
 updateCapLabel();
 
-let fileBytes = null;
+const CZ = window.NaidesuCompress;
+let fileBytes = null;    // 元ファイルの生バイト
 let fileName = 'data.bin';
 let pages = [];
+let building = false;
 
 const infoEl = document.getElementById('info');
 const genBtn = document.getElementById('gen');
 const previewsEl = document.getElementById('previews');
+const compressChk = document.getElementById('compress');
 
-function rebuildPages() {
-  if (!fileBytes) return;
-  const prof = currentProfile();
-  const ecc = currentEcc();
-  const net = CF.netPayload(prof.mode, ecc);
-  pages = CF.splitFile(fileBytes, prof.mode, ecc);
-  const eccLv = CF.ECC_LEVELS[ecc];
-  infoEl.textContent =
-    `ファイル: ${fileName}\n` +
-    `サイズ: ${fileBytes.length} byte\n` +
-    `モード: ${prof.mode.toUpperCase()}（${prof.COLS}×${prof.ROWS}・グロス ${prof.PAYLOAD_BYTES} byte/枚）\n` +
-    `誤り訂正: ${eccLv.label}（正味 ${net} byte/枚）\n` +
-    `ページ数: ${pages.length}`;
-  renderPreviews();
+// 圧縮チェックに応じて「カードに載せるバイト列」を作る。
+//   ON : NaidesuCompress.compress() で限界まで圧縮したコンテナ
+//   OFF: 生バイトそのまま
+// 返り値: { payload, note }
+async function buildPayloadBytes() {
+  if (compressChk.checked && CZ) {
+    const r = await CZ.compress(fileBytes);
+    const saved = fileBytes.length - r.compLen;
+    const pct = fileBytes.length > 0 ? (100 - r.ratio * 100) : 0;
+    let note;
+    if (r.method === CZ.METHOD.STORE) {
+      note = `圧縮: 効果なし → 無圧縮(STORE)で格納（+${r.compLen - fileBytes.length}B のヘッダのみ）`;
+    } else {
+      note = `圧縮: ${r.methodName} → ${fileBytes.length}B → ${r.compLen}B（${pct.toFixed(1)}% 削減 / -${saved}B）`;
+    }
+    return { payload: r.container, note };
+  }
+  return { payload: fileBytes, note: '圧縮: OFF（生データをそのまま格納）' };
+}
+
+async function rebuildPages() {
+  if (!fileBytes || building) return;
+  building = true;
+  genBtn.disabled = true;
+  try {
+    const prof = currentProfile();
+    const ecc = currentEcc();
+    const net = CF.netPayload(prof.mode, ecc);
+    infoEl.textContent = `圧縮とレイアウトを計算中…`;
+
+    const { payload, note } = await buildPayloadBytes();
+    pages = CF.splitFile(payload, prof.mode, ecc);
+    const eccLv = CF.ECC_LEVELS[ecc];
+    infoEl.textContent =
+      `ファイル: ${fileName}\n` +
+      `元サイズ: ${fileBytes.length} byte\n` +
+      `${note}\n` +
+      `カード格納サイズ: ${payload.length} byte\n` +
+      `モード: ${prof.mode.toUpperCase()}（${prof.COLS}×${prof.ROWS}・グロス ${prof.PAYLOAD_BYTES} byte/枚）\n` +
+      `誤り訂正: ${eccLv.label}（正味 ${net} byte/枚）\n` +
+      `ページ数: ${pages.length}`;
+    renderPreviews();
+  } finally {
+    building = false;
+    genBtn.disabled = !fileBytes;
+  }
 }
 
 document.getElementById('file').onchange = async (e) => {
@@ -153,7 +202,7 @@ document.getElementById('file').onchange = async (e) => {
   if (!f) return;
   fileName = f.name;
   fileBytes = new Uint8Array(await f.arrayBuffer());
-  rebuildPages();
+  await rebuildPages();
   genBtn.disabled = false;
 };
 
@@ -165,6 +214,7 @@ eccSel.onchange = () => {
   updateCapLabel();
   rebuildPages();
 };
+compressChk.onchange = () => { rebuildPages(); };
 
 // ---- 1ページ分をフルサイズ canvas に描画 --------------------
 function drawPage(page) {

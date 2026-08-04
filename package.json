@@ -5,7 +5,7 @@
   "license": "MIT",
   "private": true,
   "scripts": {
-    "test": "node test/roundtrip.test.js && node test/autodetect.test.js",
+    "test": "node test/roundtrip.test.js && node test/autodetect.test.js && node test/compress.test.js",
     "test:jpeg": "node --expose-gc test/jpeg-e2e.node.js"
   },
   "devDependencies": {
