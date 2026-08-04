@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>naidesu-cardloader — 読み取り (Decoder)</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="js/reed-solomon.js"></script>
 <script src="js/card-format.js"></script>
 <style>
   :root { --accent:#2563eb; --ok:#16a34a; --warn:#f59e0b; --bad:#dc2626; --bg:#0f172a; --card:#1e293b; --line:#334155; }
@@ -40,7 +41,7 @@
   <h1>🔍 naidesu-cardloader — 読み取り</h1>
   <div class="sub">
     印刷したカードのスキャン画像(300dpi程度)/写真/PDF を読み込み、バイナリに復元します。
-    1KB / 2KB / 3KB / 4KB いずれのモードでも自動判別します。
+    1KB〜5KB のモード・誤り訂正(ECC)レベルは<b>自動判別</b>し、汚れ・かすれで読み違えたマスは<b>誤り訂正で自動復元</b>します。
     四隅の黒い■を自動検出 → ズレていれば赤い枠の角をドラッグして合わせます。
     <a class="homelink" href="creator.html">→ 作成(Creator)へ</a>
   </div>
@@ -355,8 +356,9 @@ function sampleGrid(prof) {
   return bits;
 }
 
-// デコーダはモードを事前に知らないため、全モードのグリッドで試し読みし、
-// MAGIC + チェックサムが通り、かつヘッダ内モードIDと一致した結果を採用する。
+// デコーダはモード/ECCレベルを事前に知らないため、全モードのグリッドで試し読みし、
+// MAGIC + (RS訂正済み)チェックサムが通り、かつヘッダ内モードIDと一致した結果を採用する。
+// さらにヘッダから得た eccLevel で本文(グロス領域)を RS デコードして誤りを訂正する。
 function decodeAnyMode() {
   let lastMeta = null;
   for (const mode of CF.MODES) {
@@ -369,22 +371,31 @@ function decodeAnyMode() {
     if (!meta.checksumOk) continue;
     // ヘッダのモードIDが、このグリッドのモードと一致していれば確定。
     if (meta.mode === mode) {
-      return { meta, payload, prof };
+      // 本文を ECC で誤り訂正して正味データを取り出す
+      const dec = CF.decodePayload(payload, meta.eccLevel, meta.payloadLen);
+      return { meta, payload, prof, dec };
     }
   }
-  return { meta: lastMeta, payload: null, prof: null };
+  return { meta: lastMeta, payload: null, prof: null, dec: null };
 }
 
 document.getElementById('decodeBtn').onclick = () => {
   if (!corners) { setStatus('先に四隅を合わせてください', 'bad'); return; }
 
-  const { meta, payload, prof } = decodeAnyMode();
+  const { meta, payload, prof, dec } = decodeAnyMode();
   if (!meta) {
     setStatus('ヘッダを認識できませんでした。グリッドを合わせ直してください（MAGIC不一致）。', 'bad');
     return;
   }
   if (!payload || !meta.checksumOk) {
     setStatus(`ヘッダのチェックサムNG。少しズレている可能性大。角を微調整して再試行してください。\n(読めた値: mode ${meta.mode.toUpperCase()} page ${meta.pageIndex+1}/${meta.totalPages})`, 'bad');
+    return;
+  }
+  const eccName = (CF.ECC_LEVELS[meta.eccLevel] || CF.ECC_LEVELS[0]).label;
+  // 本文の RS デコードが訂正能力を超えた場合は要再スキャン
+  if (!dec || !dec.ok) {
+    setStatus(`⚠ [${meta.mode.toUpperCase()} / ECC:${eccName}] page ${meta.pageIndex+1}/${meta.totalPages} は誤りが多すぎて訂正できませんでした。\n` +
+      `角を微調整するか、より高解像度で再スキャンしてください。ECCレベルの高いカードを使うと復元しやすくなります。`, 'bad');
     return;
   }
   // 収集に反映（モードもページ間で一致していることを確認）
@@ -395,8 +406,10 @@ document.getElementById('decodeBtn').onclick = () => {
   expectedMode = meta.mode;
   expectedTotal = meta.totalPages;
   expectedFileLen = meta.totalFileLen;
-  collected[meta.pageIndex] = { payload, payloadLen: meta.payloadLen, meta };
-  setStatus(`✅ [${meta.mode.toUpperCase()}] page ${meta.pageIndex + 1}/${meta.totalPages} を取得（payload ${meta.payloadLen}B）`, 'ok');
+  // dec.data が誤り訂正済みの正味データ
+  collected[meta.pageIndex] = { payload: dec.data, payloadLen: meta.payloadLen, meta };
+  const corrMsg = dec.corrected > 0 ? `・${dec.corrected}バイトを誤り訂正` : '';
+  setStatus(`✅ [${meta.mode.toUpperCase()} / ECC:${eccName}] page ${meta.pageIndex + 1}/${meta.totalPages} を取得（payload ${meta.payloadLen}B${corrMsg}）`, 'ok');
   updateCollectionUI();
 };
 

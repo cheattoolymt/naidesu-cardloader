@@ -6,13 +6,15 @@
  * セルサンプリング + 両/全モード試し読み)で復元し、byte-exact を検証する。
  *
  * ブラウザの browser-e2e.html を Node 上で再現したもので、
- * 特に 3KB モード(1セル 0.98mm)が JPEG 圧縮を経ても 300dpi 相当で
- * 安定して読めることを確認するのが目的。
+ * 特に最高密度の 5KB モード(1セル ≈ 0.93mm)が JPEG 圧縮を経ても 300dpi 相当で
+ * 安定して読めること、および誤り訂正(ECC)で汚れ/圧縮ノイズを復元できることを
+ * 確認するのが目的。
  *
  * 依存: npm i canvas （テスト専用・本体アプリはブラウザ Canvas を使用）
  */
 'use strict';
 global.window = global;
+require('../js/reed-solomon.js');
 require('../js/card-format.js');
 const CF = global.CardFormat;
 const { createCanvas, loadImage } = require('canvas');
@@ -115,11 +117,14 @@ function decodeAnyMode(img, corners) {
     const { header, payload } = CF.bitGridToBytes(bits, prof);
     const meta = CF.parseHeader(header);
     if (!meta) continue;
-    last = { meta, payload: null };
+    last = { meta, dec: null };
     if (!meta.checksumOk) continue;
-    if (meta.mode === mode) return { meta, payload };
+    if (meta.mode === mode) {
+      const dec = CF.decodePayload(payload, meta.eccLevel, meta.payloadLen);
+      return { meta, dec };
+    }
   }
-  return last || { meta: null, payload: null };
+  return last || { meta: null, dec: null };
 }
 
 function assert(c, m) { if (!c) { console.error('FAIL:', m); process.exitCode = 1; } else console.log('ok:', m); }
@@ -137,48 +142,58 @@ async function pageToImageData(cv, viaJpeg) {
   return ctx2.getImageData(0, 0, cv2.width, cv2.height);
 }
 
-async function runCase(name, bytes, mode, viaJpeg) {
-  console.log(`\n=== [${mode}] ${name} (${bytes.length}B, jpeg=${!!viaJpeg}) ===`);
-  const pages = CF.splitFile(bytes, mode);
-  const restored = new Uint8Array(bytes.length); let off = 0, ok = true;
+async function runCase(name, bytes, mode, ecc, viaJpeg) {
+  ecc = ecc || 0;
+  console.log(`\n=== [${mode} ecc=${ecc}] ${name} (${bytes.length}B, jpeg=${!!viaJpeg}) ===`);
+  const pages = CF.splitFile(bytes, mode, ecc);
+  const restored = new Uint8Array(bytes.length); let off = 0, ok = true, corr = 0;
   for (const page of pages) {
     let cv = drawPageCanvas(page);
     let img = await pageToImageData(cv, viaJpeg);
     cv = null; // フルサイズ Canvas を早めに解放(メモリ節約)
     const corners = autoDetect(img);
     if (!corners) { ok = false; console.error('autoDetect null'); break; }
-    const { meta, payload } = decodeAnyMode(img, corners);
+    const { meta, dec } = decodeAnyMode(img, corners);
     img = null;
-    if (!meta || !meta.checksumOk || !payload) { ok = false; console.error('decode failed', meta); break; }
+    if (!meta || !meta.checksumOk || !dec || !dec.ok) { ok = false; console.error('decode failed', meta && meta.mode, dec && dec.ok); break; }
     if (meta.mode !== mode) { ok = false; console.error('mode mismatch', meta.mode, '!=', mode); break; }
-    restored.set(payload.subarray(0, meta.payloadLen), off); off += meta.payloadLen;
+    if (meta.eccLevel !== ecc) { ok = false; console.error('ecc mismatch', meta.eccLevel, '!=', ecc); break; }
+    corr += dec.corrected;
+    restored.set(dec.data.subarray(0, meta.payloadLen), off); off += meta.payloadLen;
     if (global.gc) global.gc();
   }
-  assert(ok, `[${mode}] ${name}: autodetect+mode-detect+decode ok`);
-  assert(off === bytes.length, `[${mode}] ${name}: length ${off}==${bytes.length}`);
+  assert(ok, `[${mode} ecc=${ecc}] ${name}: autodetect+mode/ecc-detect+RS-decode ok`);
+  assert(off === bytes.length, `[${mode} ecc=${ecc}] ${name}: length ${off}==${bytes.length}`);
   let eq = ok && off === bytes.length; for (let i = 0; i < bytes.length && eq; i++) if (bytes[i] !== restored[i]) eq = false;
-  assert(eq, `[${mode}] ${name}: byte-exact via REAL-JPEG(0.9) + AUTO-DETECT`);
+  assert(eq, `[${mode} ecc=${ecc}] ${name}: corrected=${corr} byte-exact via REAL-JPEG(0.9) + AUTO-DETECT`);
 }
 
 const crypto = require('crypto');
 const rand = (n) => new Uint8Array(crypto.randomBytes(n));
 
 (async () => {
-  // 全モードを実 JPEG(0.9) 経由で検証。特に最高密度の 4KB モード
-  // (1セル ≈ 1.06mm)が JPEG 圧縮を経ても 300dpi 相当で安定して読めることを
-  // 重点確認する。ページ全高を使う新レイアウトでも、4096B が1枚に収まる。
+  // 全モードを実 JPEG(0.9) 経由で検証。特に最高密度の 5KB モード
+  // (1セル ≈ 0.93mm)が JPEG 圧縮を経ても 300dpi 相当で安定して読めること、
+  // また誤り訂正(ECC)が JPEG のにじみ/圧縮ノイズを吸収できることを重点確認する。
   //
   // ※ セルサイズの読み取り安定性は「1ページ内の話」なので、ここでは
   //   1ページで完結するケースのみを実 JPEG で検証する。複数ページ分割の
   //   結合ロジックは roundtrip / autodetect テストで byte-exact を確認済み。
   //   (フルサイズ Canvas を複数枚 JPEG デコードするとメモリを大量消費
   //    するため、E2E は 1 ページ描画に限定している。)
-  await runCase('1KB-random', rand(1024), '1kb', true);
-  await runCase('2KB-random', rand(2048), '2kb', true);
-  await runCase('3KB-random', rand(3072), '3kb', true); // 3KB(3072B) をぴったり
-  await runCase('4KB-text', new TextEncoder().encode('naidesu 4KB mode E2E ✓ 日本語 0123456789'), '4kb', true);
-  await runCase('4KB-random', rand(4096), '4kb', true); // 4KB(4096B) をぴったり1枚
-  await runCase('4KB-cap', rand(CF.getProfile('4kb').PAYLOAD_BYTES), '4kb', true); // 1ページ上限(全セル最密)
+
+  // フルサイズ Canvas(2480x3508 RGBA ≈ 35MB/枚)を実 JPEG デコードするため
+  // メモリ消費が大きい。代表ケースに絞って検証する(ECC の誤り訂正そのものは
+  // roundtrip / autodetect の汚れ注入テストで網羅済み)。ケース間で明示的に GC する。
+  const gc = () => { if (global.gc) global.gc(); };
+
+  // 1) 最高密度 5KB のグロス上限が JPEG を経ても読めること(5KB以上を1枚に)
+  await runCase('5KB-cap', rand(CF.getProfile('5kb').PAYLOAD_BYTES), '5kb', 0, true); gc();
+
+  // 2) 誤り訂正(ECC)ありで、5KB の正味容量が JPEG を経ても復元できること
+  //    (JPEG のにじみ/圧縮ノイズを ECC が吸収することを確認)
+  await runCase('5KB-ecc-med', rand(CF.netPayload('5kb', 2)), '5kb', 2, true); gc();
+  await runCase('5KB-ecc-text', new TextEncoder().encode('naidesu 5KB + ECC E2E ✓ 日本語 0123456789'), '5kb', 2, true); gc();
 
   if (process.exitCode) console.log('\n*** SOME JPEG-E2E TESTS FAILED ***');
   else console.log('\nALL JPEG-E2E TESTS PASSED (1-page real-JPEG cases)');
