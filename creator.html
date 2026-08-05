@@ -58,14 +58,14 @@
       <div>
         <label>② 密度モード（1枚あたりのグロス容量）</label>
         <select id="mode">
-          <option value="1kb">1KB モード（96×143・約1.78mm・大きいマスで読み取り安定・推奨）</option>
-          <option value="2kb">2KB モード（112×167・約1.52mm・枚数を減らす）</option>
-          <option value="3kb">3KB モード（130×194・約1.31mm・高密度）</option>
-          <option value="4kb">4KB モード（149×222・約1.14mm・4KBファイルも1枚に集約）</option>
-          <option value="5kb">5KB モード（170×254・約1.00mm・高密度でも安定）</option>
-          <option value="6kb">6KB モード（183×270・約0.94mm・6KB超/枚）</option>
-          <option value="7kb">7KB モード（198×292・約0.86mm・7KB超/枚）</option>
-          <option value="8kb">8KB モード（211×311・約0.81mm・最高密度8KB超/枚）</option>
+          <option value="1kb">1KB モード（100×145・約1.79mm・大きいマスで読み取り安定・推奨）</option>
+          <option value="2kb">2KB モード（118×170・約1.52mm・枚数を減らす）</option>
+          <option value="3kb">3KB モード（137×198・約1.31mm・高密度）</option>
+          <option value="4kb">4KB モード（157×227・約1.14mm・4KBファイルも1枚に集約）</option>
+          <option value="5kb">5KB モード（178×258・約1.00mm・マス1mm以上を維持・約5.7KB/枚）</option>
+          <option value="6kb">6KB モード（196×284・約0.91mm・約6.9KB/枚）</option>
+          <option value="7kb">7KB モード（212×306・約0.84mm・約8KB/枚）</option>
+          <option value="8kb">8KB モード（226×327・約0.79mm・最高密度・約9KB/枚）</option>
         </select>
       </div>
       <div>
@@ -260,16 +260,22 @@ function drawPage(page) {
   ctx.strokeRect(prof.GRID_X, prof.GRID_Y, prof.GRID_W, prof.GRID_H);
 
   // フッタ表記（人間可読・読み取りには使わない）
+  // 「naidesu-cardloader  xKB  ECC:xxx  …」の文字を、バイナリの箱(データグリッド)の
+  // すぐ下に描く。従来はページ最下端に置いていたが、箱の直下へ移動して見やすくした。
   const hdr = CF.parseHeader(page.header);
   const eccName = (CF.ECC_LEVELS[hdr.eccLevel] || CF.ECC_LEVELS[0]).key.toUpperCase();
   ctx.fillStyle = '#000';
   ctx.font = '28px monospace';
   ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  // 箱の下端 = GRID_Y + GRID_H。その直下に少し間隔(12px)をあけて 1 行で描画。
+  const footerY = prof.GRID_Y + prof.GRID_H + 12;
   ctx.fillText(
     `naidesu-cardloader  ${prof.mode.toUpperCase()}  ECC:${eccName}  page ${hdr.pageIndex + 1}/${hdr.totalPages}  ` +
     `payload ${hdr.payloadLen}B  total ${hdr.totalFileLen}B`,
-    CF.PAGE_W / 2, CF.PAGE_H - 60
+    CF.PAGE_W / 2, footerY
   );
+  ctx.textBaseline = 'alphabetic';
   return cv;
 }
 

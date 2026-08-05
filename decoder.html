@@ -201,8 +201,11 @@ function autoDetect() {
   const data = sctx.getImageData(0, 0, w, h).data;
   const invert = document.getElementById('invert').checked;
 
-  // ダウンサンプルして高速化
-  const scale = Math.max(1, Math.round(Math.max(w, h) / 800));
+  // ダウンサンプルして高速化。ただし高密度モード(8kb=約9.3pxセル)でも
+  // ファインダ中心を十分な精度で拾えるよう、目標を 1400px 相当に上げる
+  // (粗すぎると中心の量子化誤差でセルサンプリング点がセル外に落ち、
+  //  最縁のマスを読み違えて ECC 訂正能力を超えることがある)。
+  const scale = Math.max(1, Math.round(Math.max(w, h) / 1400));
   const sw = Math.floor(w / scale), sh = Math.floor(h / scale);
   const gray = new Uint8Array(sw * sh);
   let sum = 0;
