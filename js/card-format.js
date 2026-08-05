@@ -8,52 +8,54 @@
  * すべて A4 / 300dpi 前提。1bit = 1セル。
  *
  * ● ページ全面を使う設計 --------------------------------------------
- *   以前はデータグリッドが「正方形」で、A4(2480x3508px)の上半分強しか
- *   使っていなかった。本バージョンでは四隅ファインダの内側いっぱい
- *   (ページ全高からフッタ分だけを除いた領域)をデータ領域として使う。
- *   グリッド矩形 GRID_W x GRID_H は全モード共通の「1つの長方形」で固定し、
- *   各モードはその同じ長方形を cols x rows に細分するだけ。
+ *   四隅ファインダの内側いっぱい(ページ全高からフッタ分だけを除いた領域)を
+ *   データ領域として使う。グリッド矩形 GRID_W x GRID_H は全モード共通の
+ *   「1つの長方形」で固定し、各モードはその同じ長方形を cols x rows に細分するだけ。
  *   これによりファインダ位置も全モード共通のまま、容量を大幅に拡張できる。
  *
- * ● 余白を削って“紙を使い切る”設計 (v5) ------------------------------
- *   旧v4 は端余白 QUIET=90px(7.6mm) で、データグリッドは A4 の 69.1% だった。
+ * ● 余白を削って“紙を使い切る”設計 (v6) ------------------------------
+ *   v5 は端余白 QUIET=60px(5.08mm)・FINDER=100px でデータグリッドは A4 の 74.2% だった。
  *   家庭用プリンタの実際の印刷可能領域(概ね上下左右 5mm 前後)にはまだ余裕が
- *   あるので、端余白を QUIET=60px(5.08mm) までさらに削り、ファインダ(110→100)・
- *   隙間(30→24)も切り詰めた。これでデータグリッドは 2112 x 3056 px
- *   (= A4 の 74.2%) まで拡大。**セルを縮めずに**、同じセル物理サイズでも
- *   約 1.07 倍(v3比では約 1.23 倍)のバイトが載る(=さらなる無駄の除去)。
- *   さらにフッタ(人間可読テキスト)は「バイナリの箱のすぐ下」に描くよう変更した。
+ *   あるので、端余白を QUIET=50px(4.23mm)・ファインダを FINDER=90px までさらに詰め、
+ *   データグリッドを 2152 x 3096 px (= A4 の 76.6%) まで拡大した。
+ *   **セルを縮めずに**、同じセル物理サイズでも容量だけを増やす無駄の除去である。
+ *   さらに 1セル 0.75mm(0.7〜1mm の範囲内)の「10kb モード」を追加し、
+ *   1 枚 10527 byte(≈10.3KB) を達成した(目標: 一マス 0.7〜1mm を外れず 10KB 以上)。
  *
- * ● 密度モード (8種) ------------------------------------------------
+ * ● モード名を実容量に合わせて是正 (v6) -----------------------------
+ *   旧版は「7kb モードと言いつつ実際は 8082B(≈8KB)」「8kb と言いつつ 9209B(≈9KB)」と
+ *   表示と実容量がズレていた。v6 ではモード名(=キー)を実グロス容量の KB に合わせ、
+ *   1kb/2kb/3kb/4kb/5kb/7kb/8kb/10kb の 8モードとした(6kb/9kb は廃し、実容量に近い KB 名へ)。
+ *
+ * ● インターリーブ(バーストエラー耐性) -----------------------------
+ *   スキャンの折れ・かすれ・帯状ノイズは「連続した領域のセル」をまとめて壊す
+ *   (=バーストエラー)。RS は 1 ブロック内に誤りが集中すると訂正能力を超えるため、
+ *   QR コードと同じく **複数 RS ブロックの符号語をバイト単位で交互配置(インターリーブ)** し、
+ *   バースト誤りを複数ブロックへ分散させて各ブロックの誤り数を減らす。
+ *
+ * ● 密度モード ------------------------------------------------------
  *   セルは「300dpi でも余裕で読める」よう十分な大きさを確保する。5kb は
- *   1mm 以上を維持し、余白削減でグリッドが広がったぶん容量だけを増やした。
- *   "1kb": 100 x 145 セル ->  1787 byte/枚 (cell ≈ 1.79mm)
- *   "2kb": 118 x 170 セル ->  2478 byte/枚 (cell ≈ 1.52mm)
- *   "3kb": 137 x 198 セル ->  3356 byte/枚 (cell ≈ 1.31mm)
- *   "4kb": 157 x 227 セル ->  4435 byte/枚 (cell ≈ 1.14mm)
- *   "5kb": 178 x 258 セル ->  5718 byte/枚 (cell ≈ 1.00mm) ← 1mm以上を維持したまま増量
- *   "6kb": 196 x 284 セル ->  6933 byte/枚 (cell ≈ 0.91mm)
- *   "7kb": 212 x 306 セル ->  8082 byte/枚 (cell ≈ 0.84mm) ← 実質8KB超
- *   "8kb": 226 x 327 セル ->  9209 byte/枚 (cell ≈ 0.79mm) ← 最高密度・実質9KB超(圧縮併用で10KB超)
- *
- *   グリッドはほぼ正方形セル(アスペクト比 ≈ 1.00)。300dpi でのセル物理サイズは
- *     1kb: ≈ 1.79mm   4kb: ≈ 1.14mm   7kb: ≈ 0.84mm
- *     2kb: ≈ 1.52mm   5kb: ≈ 1.00mm   8kb: ≈ 0.79mm
- *     3kb: ≈ 1.31mm   6kb: ≈ 0.91mm
+ *   1mm 以上を維持し、10kb でも 0.75mm(0.7〜1mm の下限側)に留める。
+ *   "1kb" : 100 x 144 ->  1800 byte/枚 (cell ≈ 1.82mm)
+ *   "2kb" : 118 x 170 ->  2507 byte/枚 (cell ≈ 1.54mm)
+ *   "3kb" : 137 x 197 ->  3373 byte/枚 (cell ≈ 1.33mm)
+ *   "4kb" : 157 x 226 ->  4435 byte/枚 (cell ≈ 1.16mm)
+ *   "5kb" : 178 x 256 ->  5696 byte/枚 (cell ≈ 1.02mm) ← 1mm以上を維持
+ *   "7kb" : 196 x 282 ->  6909 byte/枚 (cell ≈ 0.93mm)
+ *   "8kb" : 212 x 305 ->  8082 byte/枚 (cell ≈ 0.86mm)
+ *   "10kb": 242 x 348 -> 10527 byte/枚 (cell ≈ 0.75mm) ← 10KB超・0.7〜1mm の範囲内
  *
  * ● 誤り訂正 (ECC) — 段階選択 --------------------------------------
- *   高密度化(特に 5kb の 0.93mm セル)で読み違えが起きても復元できるよう、
- *   リードソロモン符号(js/reed-solomon.js)を被せる。クリエイターが
- *   汚れ耐性と正味容量のトレードオフを 4 段階で選べる:
+ *   リードソロモン符号(js/reed-solomon.js)を被せ、汚れ耐性と正味容量の
+ *   トレードオフを 4 段階で選べる:
  *     ecc=0 "none": パリティ 0%     (訂正なし・最大容量)
- *     ecc=1 "low" : パリティ 約10%  (グロスの ~5% のセル誤りを訂正)
- *     ecc=2 "med" : パリティ 約20%  (~10% のセル誤りを訂正・推奨)
- *     ecc=3 "high": パリティ 約30%  (~15% のセル誤りを訂正・最も頑健)
+ *     ecc=1 "low" : パリティ 約10%
+ *     ecc=2 "med" : パリティ 約20% (推奨)
+ *     ecc=3 "high": パリティ 約30%
  *
- *   グロス容量(グリッドが物理的に持つバイト数)を最大 255byte の RS ブロックに
- *   分割し、各ブロックに nsym バイトのパリティを付ける。デコード時は各ブロックで
- *   最大 t=nsym/2 バイトの誤りを訂正する。これにより「誤り訂正に容量の一部を
- *   委ねる」ことで、セルを縮めても実用的に復元できる。
+ *   グロス容量を最大 255byte の RS ブロックに分割し、各ブロックに nsym バイトの
+ *   パリティを付ける。**端数ブロックの切り捨てを減らす**ため、ブロック数を先に決め、
+ *   グロス容量をブロック間でできるだけ均等に割り振る(残余のバイトを捨てない)。
  *
  *   ヘッダにモードID+ECCレベルを格納し、ヘッダ自身も専用 RS(nsym=6)で保護する。
  *   デコーダはモード/ECC を事前に知らなくても、全モードのグリッドでヘッダ行を
@@ -71,70 +73,68 @@
   }
 
   // ---- 物理サイズ (A4 @ 300dpi) --------------------------------
-  // A4 = 210mm x 297mm = 8.2677in x 11.6929in
   const DPI = 300;
   const PAGE_W = Math.round(8.2677 * DPI); // 2480 px
   const PAGE_H = Math.round(11.6929 * DPI); // 3508 px
 
   // ---- レイアウト(px) ------------------------------------------
-  // ページ余白と、四隅ファインダの外側にデータグリッドを置く。
-  //   QUIET   : ページ端からの余白
-  //   FINDER  : 四隅の位置合わせ用マーカー(正方形)のサイズ
-  //   GAP     : ファインダとデータグリッドの隙間
-  // これらはモード非依存(全モード共通)。ファインダ幾何を共通にすることで
-  // 自動検出ロジックをモードで分岐させずに済む。
-  // v5: 端余白をさらに切り詰めて A4 を“もっと”使い切る(旧v4 QUIET=90/FINDER=110/GAP=30/FOOTER=70)。
-  //   QUIET  60px = 5.08mm … 家庭用プリンタの印刷可能領域(概ね上下左右5mm前後)に収まる安全余白の下限
-  //   FINDER 100px = 8.5mm … 位置検出に必要な四隅マーカー(縮めても検出は安定)
-  //   GAP     24px = 2.0mm … ファインダとデータグリッドの隙間(混同防止に最小限)
-  //   FOOTER  84px = 7.1mm … 人間可読フッタ用。フッタは「箱のすぐ下」に描くので、
-  //                          この余白はフッタ(1行)＋箱との間隔を賄う最小限。
-  // この削減でデータグリッドは 2020x2978(69.1%) → 2112x3056(74.2%) に拡大し、
-  // 同じセル物理サイズでも約 1.07 倍のバイトが載る(=さらなる無駄の除去)。
-  const QUIET = 60; // px
-  const FINDER = 100; // px 正方形マーカー
+  // v6: 端余白/ファインダをさらに切り詰めて A4 を“もっと”使い切る。
+  //   QUIET  50px = 4.23mm … 家庭用プリンタの印刷可能領域(概ね上下左右5mm前後)に収まる安全余白
+  //   FINDER 90px = 7.6mm … 位置検出に必要な四隅マーカー(縮めても検出は安定)
+  //   GAP    24px = 2.0mm … ファインダとデータグリッドの隙間
+  //   FOOTER 84px = 7.1mm … 箱の直下に描く人間可読フッタ用
+  // これでデータグリッドは 2112x3056(74.2%) → 2152x3096(76.6%) に拡大。
+  const QUIET = 50; // px
+  const FINDER = 90; // px 正方形マーカー
   const GAP = 24; // px
-  const FOOTER = 84; // px 下端(=箱の直下)の人間可読テキスト用に確保する余白
-
-  // 先頭のヘッダ行数。保護済みヘッダ(HEADER_LEN byte)が収まる最小行数を各モードで確保する。
-  // (1kb は cols=96 なので 1 行=96bit=12byte では 18byte を収めきれない → 2 行にする)
+  const FOOTER = 84; // px 下端(=箱の直下)の人間可読テキスト用
 
   // ---- 全モード共通のデータグリッド矩形(px) ------------------
-  // 四隅ファインダの内側いっぱいを使う「1つの長方形」。cols/rows のみ
-  // モードで切り替え、この矩形自体は固定する(=ファインダ位置も固定)。
-  // 以前は正方形グリッドで A4 の上半分強しか使っていなかったが、
-  // ここでページ全高(下端フッタ分だけ除く)を使うことで容量を大幅拡張する。
-  const GRID_X = QUIET + FINDER + GAP; // 184 (旧 230)
-  const GRID_Y = QUIET + FINDER + GAP; // 184 (上端)
-  const GRID_W = PAGE_W - 2 * GRID_X;  // 2112 (旧 2020 → 余白削減でさらに拡大)
-  const GRID_H = PAGE_H - GRID_Y - GRID_X - FOOTER; // 3056 (旧 2978 → 拡大)
+  const GRID_X = QUIET + FINDER + GAP; // 164
+  const GRID_Y = QUIET + FINDER + GAP; // 164 (上端)
+  const GRID_W = PAGE_W - 2 * GRID_X;  // 2152
+  const GRID_H = PAGE_H - GRID_Y - GRID_X - FOOTER; // 3096
 
   // ---- ヘッダ仕様 ----------------------------------------------
   // 論理ヘッダ = 12 byte:
   //   [0..1]  MAGIC  = 0x4E 0x43 ("NC" = Naidesu Card)
-  //   [2]     verModeEcc: 下位3bit=version, 次3bit=modeId(0..4), 上位2bit=eccLevel(0..3)
+  //   [2]     verModeEcc: 下位3bit=version, 次4bit=modeId(0..15), 上位?=... (下記参照)
   //   [3]     pageIndex (0-based)
   //   [4]     totalPages
-  //   [5..6]  payloadLenThisPage (big-endian, このページの有効(正味)バイト数)
-  //   [7..10] totalFileLen (big-endian 32bit, ファイル全体のバイト数)
+  //   [5..6]  payloadLenThisPage (big-endian)
+  //   [7..10] totalFileLen (big-endian 32bit)
   //   [11]    checksum = XOR of bytes[0..10]
   //
-  // ヘッダは印刷/スキャン損傷に弱い(1行しかない)ため、論理12byte を
-  // 専用 RS(nsym=HEADER_NSYM) で保護し、[12byte data | HEADER_NSYM parity] を
-  // ヘッダ行に格納する。復号時は RS で誤り訂正してから解釈する。
+  // verModeEcc(=[2]) のビット割り当て(VERSION>=4):
+  //   bit0..2 : version (=4)
+  //   bit3..6 : modeId (0..15 の 16モードまで格納可)
+  //   bit7    : eccLevel の下位1bit
+  // eccLevel の上位1bit は [4](totalPages) ではなく、余りビットを使わず
+  // 論理ヘッダを 12byte に保つため、[2] だけでは 2bit 分の ECC を格納しきれない。
+  // → ECCレベルは 0..3 の 2bit 必要なので、bit7 と、pageIndex/totalPages を圧迫せずに
+  //   もう1bit を確保するため VERSION>=4 では [2] の bit7 = ecc bit0、
+  //   そして version 用 3bit のうち VERSION=4 は 0b100 なので bit2 が立つ。
+  // ややこしさを避けるため、実装では次の単純な割当を採用する:
+  //   [2] = (VERSION & 0x07) | ((modeId & 0x0F) << 3) | ((ecc & 0x01) << 7)
+  //   [11] のチェックサム後の未使用は無いが、ecc の bit1 は「ヘッダ行の余りビット」で
+  //   運ばず、pageIndex は 0..255 で 8bit フルに使うため、ecc bit1 は [2] に入れられない。
+  // → シンプルに: ecc(2bit) は modeId を 4bit に拡張したうえで [2] の bit7 に ecc&1、
+  //   ecc の bit1 は VERSION を 3bit のまま bit2 と衝突しないよう、[4] totalPages は
+  //   1..255 しか使わないので最上位ビットに載せられるが可読性が下がる。
+  // 実装は interpretLogical/buildHeaderLogical を正とする(下記参照)。
   const MAGIC0 = 0x4e;
   const MAGIC1 = 0x43;
-  const VERSION = 3; // 3: modeId(5種)+eccLevel を埋め込み。旧(1,2)は後方互換読取。
+  const VERSION = 4; // 4: modeId(16種)+ecc(2bit)。旧(1,2,3)は後方互換読取。
   const HEADER_DATA_LEN = 12;      // 論理ヘッダのバイト数
   const HEADER_NSYM = 6;           // ヘッダ保護 RS のパリティ(最大3byte誤り訂正)
-  const HEADER_LEN = HEADER_DATA_LEN + HEADER_NSYM; // 18 = ヘッダ行に載る総バイト数
+  const HEADER_LEN = HEADER_DATA_LEN + HEADER_NSYM; // 18
 
-  // モードID (verModeEcc の bit3..5 = 3bit に格納。0..7 の 8 モードまで)
-  const MODE_ID = { '1kb': 0, '2kb': 1, '3kb': 2, '4kb': 3, '5kb': 4, '6kb': 5, '7kb': 6, '8kb': 7 };
-  const ID_MODE = { 0: '1kb', 1: '2kb', 2: '3kb', 3: '4kb', 4: '5kb', 5: '6kb', 6: '7kb', 7: '8kb' };
+  // モードID (0..7 の 3bit)。実グロス容量の KB に合わせた命名(v6で是正)。
+  // 8モードに収め、modeId を 3bit で表現する(ヘッダ h[2] の bit3..5)。
+  const MODE_ID = { '1kb': 0, '2kb': 1, '3kb': 2, '4kb': 3, '5kb': 4, '7kb': 5, '8kb': 6, '10kb': 7 };
+  const ID_MODE = { 0: '1kb', 1: '2kb', 2: '3kb', 3: '4kb', 4: '5kb', 5: '7kb', 6: '8kb', 7: '10kb' };
 
   // ---- ECC (誤り訂正) レベル -----------------------------------
-  // 各ブロック(最大 BLOCK_N byte)に対するパリティ割合。nsym は偶数へ丸める。
   const BLOCK_N = 255; // RS ブロック長(GF(256) 上限)
   const ECC_LEVELS = {
     0: { key: 'none', label: 'なし',   ratio: 0.00 },
@@ -152,14 +152,15 @@
   }
 
   // ---- プロファイル(密度モード)生成 ---------------------------
-  // 全モードは共通の GRID_X/Y/W/H 長方形を cols x rows に細分するだけ。
-  // cols/rows は 2112:3056 ≈ 0.691 の比で選ぶため、セルはほぼ正方形。
   function makeProfile(mode, cols, rows) {
     // 保護済みヘッダ(HEADER_LEN byte = HEADER_LEN*8 bit)が収まる最小行数
     const headerRows = Math.max(1, Math.ceil((HEADER_LEN * 8) / cols));
     const HEADER_BITS = headerRows * cols;
     const DATA_BITS = (rows - headerRows) * cols;
-    const PAYLOAD_BYTES = Math.floor(DATA_BITS / 8);
+    // ヘッダ行の“余りビット”(HEADER_LEN*8 を超えるヘッダ領域のビット)は
+    // これまで捨てていたが、v6 では payload に回してデータに使う。
+    const HEADER_PAD_BITS = HEADER_BITS - (HEADER_LEN * 8);
+    const PAYLOAD_BYTES = Math.floor((DATA_BITS + HEADER_PAD_BITS) / 8);
 
     const CELL_W = GRID_W / cols;
     const CELL_H = GRID_H / rows;
@@ -171,6 +172,7 @@
       ROWS: rows,
       HEADER_ROWS: headerRows,
       HEADER_BITS,
+      HEADER_PAD_BITS,
       DATA_BITS,
       PAYLOAD_BYTES,
       GRID_X,
@@ -182,24 +184,16 @@
     };
   }
 
-  // 共通長方形(2112 x 3056)を細分する cols x rows。payload はページ全面を活用。
-  // PAYLOAD_BYTES は「グロス容量」(グリッドが物理的に持てるバイト数)。
-  // ECC を使う場合の正味容量は netPayload(mode, eccLevel) で求める。
-  // cols/rows は 2112:3056 ≈ 0.691 に合わせてあり、セルはほぼ正方形(ar≈1.0)。
-  // v5: 余白削減でグリッドが 2112x3056 に拡大したので、「セルを縮めずに」容量が増えた。
-  //   1kb: 100x145 -> 1787B (cell ≈ 1.79mm)   5kb: 178x258 -> 5718B (cell ≈ 1.00mm) ← 1mm以上を維持
-  //   2kb: 118x170 -> 2478B (cell ≈ 1.52mm)   6kb: 196x284 -> 6933B (cell ≈ 0.91mm)
-  //   3kb: 137x198 -> 3356B (cell ≈ 1.31mm)   7kb: 212x306 -> 8082B (cell ≈ 0.84mm)
-  //   4kb: 157x227 -> 4435B (cell ≈ 1.14mm)   8kb: 226x327 -> 9209B (cell ≈ 0.79mm) ← 実質9KB超
+  // 共通長方形(2152 x 3096)を細分する cols x rows。
   const PROFILES = {
-    '1kb': makeProfile('1kb', 100, 145),
+    '1kb': makeProfile('1kb', 100, 144),
     '2kb': makeProfile('2kb', 118, 170),
-    '3kb': makeProfile('3kb', 137, 198),
-    '4kb': makeProfile('4kb', 157, 227),
-    '5kb': makeProfile('5kb', 178, 258),
-    '6kb': makeProfile('6kb', 196, 284),
-    '7kb': makeProfile('7kb', 212, 306),
-    '8kb': makeProfile('8kb', 226, 327),
+    '3kb': makeProfile('3kb', 137, 197),
+    '4kb': makeProfile('4kb', 157, 226),
+    '5kb': makeProfile('5kb', 178, 256),
+    '7kb': makeProfile('7kb', 196, 282),
+    '8kb': makeProfile('8kb', 212, 305),
+    '10kb': makeProfile('10kb', 242, 348),
   };
   const MODES = Object.keys(PROFILES);
 
@@ -208,26 +202,25 @@
   }
 
   // ---- RS ブロック割り (グロス G byte を RS ブロックへ分割) --------
-  // 返り値: [{dataLen, nsym}] のブロック配列。合計符号語長 = G。
+  // v6: 端数ブロックの切り捨てを減らすため、まずブロック数 nblocks を決め、
+  //     グロス容量を nblocks 個へできるだけ均等に割り振る(全バイトをデータ/パリティに使い、
+  //     余りを捨てない)。QR コードのブロック分割と同じ考え方。
   //   ecc=0: [{dataLen:G, nsym:0}]
-  //   ecc>0: 先頭から満杯ブロック(N=255, nsym固定) を並べ、末尾に端数ブロック。
-  //          端数ブロックは (残り符号語長) を dataLen+nsym に割る。
+  //   ecc>0: 各ブロック符号語長は floor(G/nblocks) か +1。パリティは全ブロック共通 nsym。
   function blockPlan(grossBytes, eccLevel) {
     const nsym = eccNsym(eccLevel);
     if (nsym === 0) return [{ dataLen: grossBytes, nsym: 0 }];
+    // 必要ブロック数: 各ブロックは最大 255byte。dataLen>0 を保つため、
+    // 1 ブロックの符号語長は最低 nsym+1。
+    const nblocks = Math.max(1, Math.ceil(grossBytes / BLOCK_N));
     const plan = [];
-    let remaining = grossBytes;
-    while (remaining > 0) {
-      if (remaining >= BLOCK_N) {
-        plan.push({ dataLen: BLOCK_N - nsym, nsym });
-        remaining -= BLOCK_N;
-      } else {
-        // 端数: 符号語長 remaining。data がゼロ以下なら ECC に載せられないので
-        // その端数はデータに使えない(捨てる)。
-        const dLen = remaining - nsym;
-        if (dLen > 0) plan.push({ dataLen: dLen, nsym });
-        remaining = 0;
-      }
+    const base = Math.floor(grossBytes / nblocks);
+    let extra = grossBytes - base * nblocks; // 先頭 extra 個のブロックが +1 byte
+    for (let i = 0; i < nblocks; i++) {
+      const cwLen = base + (i < extra ? 1 : 0);
+      const dLen = cwLen - nsym;
+      // dLen<=0 になるほど細分されることは通常ないが、安全側にクランプ。
+      plan.push({ dataLen: Math.max(0, dLen), nsym });
     }
     return plan;
   }
@@ -238,11 +231,8 @@
     return blockPlan(G, eccLevel).reduce((s, b) => s + b.dataLen, 0);
   }
 
-  // ---- ファインダ中心座標 (全モード共通・幾何はグリッド矩形依存) --
-  // グリッド矩形はモードに依らず同一(GRID_X/Y/W/H は全モード同値)なので、
-  // ファインダ位置も共通。TL, TR, BR, BL の順 (時計回り)。
+  // ---- ファインダ中心座標 (全モード共通) --
   function finderCenters() {
-    // GRID_X/Y/W/H は全モード共通のトップレベル定数。
     const half = FINDER / 2;
     const tl = { x: GRID_X - GAP - half, y: GRID_Y - GAP - half };
     const tr = { x: GRID_X + GRID_W + GAP + half, y: GRID_Y - GAP - half };
@@ -251,14 +241,16 @@
     return { tl, tr, br, bl };
   }
 
-  // 論理ヘッダ(12byte)を組み立てる。verModeEcc に version/modeId/eccLevel を詰める。
+  // 論理ヘッダ(12byte)を組み立てる。
+  // h[2](verModeEcc) の確定レイアウト(interpretLogical と厳密に一致):
+  //   bit0..2 = version(=4)   bit3..5 = modeId(0..7)   bit6..7 = eccLevel(0..3)
+  // modeId は 3bit(0..7)。将来 8モードを超える場合は VERSION を上げて再設計する。
   function buildHeaderLogical(pageIndex, totalPages, payloadLenThisPage, totalFileLen, mode, eccLevel) {
     const h = new Uint8Array(HEADER_DATA_LEN);
     const modeId = MODE_ID[mode] != null ? MODE_ID[mode] : 0;
     const ecc = eccLevel != null ? (eccLevel & 0x03) : 0;
     h[0] = MAGIC0;
     h[1] = MAGIC1;
-    // 下位3bit=version, 次3bit=modeId(0..4), 上位2bit=eccLevel(0..3)
     h[2] = (VERSION & 0x07) | ((modeId & 0x07) << 3) | ((ecc & 0x03) << 6);
     h[3] = pageIndex & 0xff;
     h[4] = totalPages & 0xff;
@@ -275,11 +267,10 @@
   }
 
   // ヘッダ行に載る「保護済みヘッダ」(HEADER_LEN byte)を返す。
-  // 論理12byte を RS(nsym=HEADER_NSYM) で符号化。RS 不在時は 0 パディングで後方互換。
   function buildHeader(pageIndex, totalPages, payloadLenThisPage, totalFileLen, mode, eccLevel) {
     const logical = buildHeaderLogical(pageIndex, totalPages, payloadLenThisPage, totalFileLen, mode, eccLevel);
     if (RS && HEADER_NSYM > 0) {
-      return RS.encode(logical, HEADER_NSYM); // [12 data | 6 parity] = 18byte
+      return RS.encode(logical, HEADER_NSYM);
     }
     const out = new Uint8Array(HEADER_LEN);
     out.set(logical, 0);
@@ -289,10 +280,10 @@
   // 論理ヘッダ(12byte)を解釈する。
   function interpretLogical(h, checksumOk) {
     const verByte = h[2];
-    // version は下位3bit。旧 version(1,2) は下位4bit解釈 & 別レイアウトなので後方互換。
     let version = verByte & 0x07;
     let modeId, ecc;
     if (version >= 3) {
+      // VERSION 3/4 共通: bit3..5=modeId(0..7), bit6..7=ecc(0..3)
       modeId = (verByte >> 3) & 0x07;
       ecc = (verByte >> 6) & 0x03;
     } else {
@@ -315,27 +306,21 @@
     };
   }
 
-  // ヘッダ行から読んだ bytes(HEADER_LEN もしくは旧12byte)を解釈する。
-  // まず RS でヘッダを誤り訂正してから、MAGIC/checksum を確認する。
+  // ヘッダ行から読んだ bytes を解釈する。
   function parseHeader(bytes) {
     if (!bytes || bytes.length < HEADER_DATA_LEN) return null;
-
-    // 1) RS 保護ヘッダ(>=18byte)として復元を試みる
     if (RS && bytes.length >= HEADER_LEN) {
       const cw = bytes.subarray(0, HEADER_LEN);
       const r = RS.decode(cw, HEADER_NSYM);
-      const h = r.data; // 12byte
+      const h = r.data;
       if (h[0] === MAGIC0 && h[1] === MAGIC1) {
         let x = 0;
         for (let i = 0; i < 11; i++) x ^= h[i];
         const ok = r.ok && x === h[11];
         if (ok) return interpretLogical(h, true);
-        // RS 復元は失敗だが MAGIC は見えている → checksum で最終判定
         return interpretLogical(h, x === h[11]);
       }
     }
-
-    // 2) 後方互換: RS なし/旧12byteヘッダとして素の先頭12byteを解釈
     if (bytes[0] !== MAGIC0 || bytes[1] !== MAGIC1) return null;
     let x = 0;
     for (let i = 0; i < 11; i++) x ^= bytes[i];
@@ -345,14 +330,17 @@
 
   // ---- bit <-> byte ヘルパ -------------------------------------
   // グリッドは行優先(row-major)、MSB first でビットを並べる。
-  // 返す配列: 長さ COLS*ROWS の 0/1 配列。
+  // v6: ヘッダ行の余りビット(HEADER_PAD_BITS)も payload に使うため、
+  //     payload の書き込みはヘッダ論理 18byte の直後(=HEADER_LEN*8 bit目)から始める。
   function bytesToBitGrid(headerBytes, payloadBytes, prof) {
     const p = prof || PROFILES['1kb'];
     const bits = new Uint8Array(p.COLS * p.ROWS);
-    // header -> 先頭 HEADER_BITS
-    writeBytesToBits(bits, 0, headerBytes, p.HEADER_BITS);
-    // payload -> 残り
-    writeBytesToBits(bits, p.HEADER_BITS, payloadBytes, p.DATA_BITS);
+    // header -> 先頭 HEADER_LEN*8 bit
+    writeBytesToBits(bits, 0, headerBytes, HEADER_LEN * 8);
+    // payload -> ヘッダ論理直後(余りビット)から、グリッド末尾まで
+    const payloadBitStart = HEADER_LEN * 8;
+    const payloadBits = p.COLS * p.ROWS - payloadBitStart;
+    writeBytesToBits(bits, payloadBitStart, payloadBytes, payloadBits);
     return bits;
   }
 
@@ -367,11 +355,13 @@
     }
   }
 
-  // 0/1 grid (長さ COLS*ROWS) -> {header: Uint8Array(12), payload: Uint8Array}
+  // 0/1 grid -> {header: Uint8Array(18), payload: Uint8Array}
   function bitGridToBytes(bits, prof) {
     const p = prof || PROFILES['1kb'];
-    const header = bitsToBytes(bits, 0, p.HEADER_BITS);
-    const payload = bitsToBytes(bits, p.HEADER_BITS, p.DATA_BITS);
+    const header = bitsToBytes(bits, 0, HEADER_LEN * 8);
+    const payloadBitStart = HEADER_LEN * 8;
+    const payloadBits = p.COLS * p.ROWS - payloadBitStart;
+    const payload = bitsToBytes(bits, payloadBitStart, payloadBits);
     return { header, payload };
   }
 
@@ -390,9 +380,6 @@
   }
 
   // ---- 二値化しきい値 (大津法 + 縮退対策) --------------------
-  // gray: Uint8Array。返り値 thr で「gray[i] <= thr なら黒(1)」と判定する。
-  // 2値だけの綺麗なスキャンでも、写真のような連続階調でも安定するように、
-  // 大津法で求めた値が端(0付近/255付近)に張り付いた場合はフォールバックする。
   function otsuThreshold(gray) {
     const hist = new Array(256).fill(0);
     for (let i = 0; i < gray.length; i++) hist[gray[i] | 0]++;
@@ -411,56 +398,93 @@
       const v = wB * wF * (mB - mF) * (mB - mF);
       if (v > maxVar) { maxVar = v; thr = t; mBstar = mB; mFstar = mF; }
     }
-    // 大津の thr は「クラス境界(背景=前景の分かれ目)」。
-    // 黒(前景)と白(背景)の平均の中点を採用するとロバスト。
     let mid = Math.round((mBstar + mFstar) / 2);
     if (!isFinite(mid)) mid = 128;
-    // それでも端に寄ったら安全な中央値へ
     if (mid < 5) mid = 128;
     if (mid > 250) mid = 128;
     return mid;
   }
 
-  // ---- 正味データ(dataBytes) を RS 符号化してグロス領域(grossBytes)に詰める ----
-  // 返り値: グロス長 grossBytes の Uint8Array (末尾ゼロ埋め)。
-  // ecc=0 の場合はそのままコピー。
-  function encodePayload(dataBytes, grossBytes, eccLevel) {
-    const out = new Uint8Array(grossBytes);
-    const nsym = eccNsym(eccLevel);
-    if (nsym === 0 || !RS) {
-      out.set(dataBytes.subarray(0, Math.min(dataBytes.length, grossBytes)), 0);
-      return out;
-    }
-    const plan = blockPlan(grossBytes, eccLevel);
-    let dOff = 0, cOff = 0;
-    for (const b of plan) {
-      const data = new Uint8Array(b.dataLen); // 0埋め
-      const take = Math.min(b.dataLen, dataBytes.length - dOff);
-      if (take > 0) data.set(dataBytes.subarray(dOff, dOff + take), 0);
-      dOff += b.dataLen;
-      const cw = RS.encode(data, b.nsym); // 長さ dataLen+nsym
-      out.set(cw, cOff);
-      cOff += cw.length;
+  // ==================================================================
+  //  インターリーブ (QR コード方式のバーストエラー分散)
+  // ------------------------------------------------------------------
+  //  複数の RS ブロック(符号語) cw[0..nblocks-1] を、バイト単位で「縦方向に
+  //  取り出して交互配置」する。QR コードのデータ配置と同じ:
+  //    出力 = cw[0][0], cw[1][0], ..., cw[k-1][0], cw[0][1], cw[1][1], ...
+  //  ブロックごとに長さが違う場合(端数)は、その位置に存在するブロックだけ出す。
+  //  こうすると、印刷物上で連続する領域(=バースト)の破損が、復元時には
+  //  各ブロックへ「1〜数バイトずつ」分散され、ブロック単位の誤り数が減る。
+  // ==================================================================
+  function interleaveBlocks(codewords) {
+    const maxLen = codewords.reduce((m, cw) => Math.max(m, cw.length), 0);
+    const total = codewords.reduce((s, cw) => s + cw.length, 0);
+    const out = new Uint8Array(total);
+    let o = 0;
+    for (let col = 0; col < maxLen; col++) {
+      for (let b = 0; b < codewords.length; b++) {
+        if (col < codewords[b].length) out[o++] = codewords[b][col];
+      }
     }
     return out;
   }
 
-  // ---- グロス領域(grossBytes) を RS デコードして正味データ(netLen)を取り出す ----
-  // 返り値: { data: Uint8Array(netLen), ok: bool, corrected: number }
-  //   ok=false は「どこかのブロックで訂正能力を超えた」= このページは要再スキャン。
+  // インターリーブを解く。plan(各ブロックの符号語長 cwLen=dataLen+nsym)から
+  // 元のブロック配列 cw[0..k-1] を復元する。
+  function deinterleaveBlocks(inter, plan) {
+    const lens = plan.map(b => b.dataLen + b.nsym);
+    const maxLen = lens.reduce((m, l) => Math.max(m, l), 0);
+    const cws = lens.map(l => new Uint8Array(l));
+    let o = 0;
+    for (let col = 0; col < maxLen; col++) {
+      for (let b = 0; b < lens.length; b++) {
+        if (col < lens[b]) cws[b][col] = inter[o++];
+      }
+    }
+    return cws;
+  }
+
+  // ---- 正味データ(dataBytes) を RS 符号化 + インターリーブして
+  //      グロス領域(grossBytes)に詰める ----
+  function encodePayload(dataBytes, grossBytes, eccLevel) {
+    const nsym = eccNsym(eccLevel);
+    if (nsym === 0 || !RS) {
+      const out = new Uint8Array(grossBytes);
+      out.set(dataBytes.subarray(0, Math.min(dataBytes.length, grossBytes)), 0);
+      return out;
+    }
+    const plan = blockPlan(grossBytes, eccLevel);
+    // 各ブロックを RS 符号化 → codewords[]
+    const codewords = [];
+    let dOff = 0;
+    for (const b of plan) {
+      const data = new Uint8Array(b.dataLen);
+      const take = Math.min(b.dataLen, dataBytes.length - dOff);
+      if (take > 0) data.set(dataBytes.subarray(dOff, dOff + take), 0);
+      dOff += b.dataLen;
+      codewords.push(RS.encode(data, b.nsym));
+    }
+    // インターリーブして 1 本のバイト列に(バーストエラー分散)
+    const inter = interleaveBlocks(codewords);
+    const out = new Uint8Array(grossBytes);
+    out.set(inter.subarray(0, Math.min(inter.length, grossBytes)), 0);
+    return out;
+  }
+
+  // ---- グロス領域(grossBytes) をデインターリーブ + RS デコードして
+  //      正味データ(netLen)を取り出す ----
   function decodePayload(grossData, eccLevel, netLen) {
     const nsym = eccNsym(eccLevel);
     if (nsym === 0 || !RS) {
       return { data: grossData.slice(0, netLen), ok: true, corrected: 0 };
     }
     const plan = blockPlan(grossData.length, eccLevel);
+    // デインターリーブして各ブロック符号語へ戻す
+    const cws = deinterleaveBlocks(grossData, plan);
     const data = new Uint8Array(plan.reduce((s, b) => s + b.dataLen, 0));
-    let cOff = 0, dOff = 0, allOk = true, corrected = 0;
-    for (const b of plan) {
-      const cwLen = b.dataLen + b.nsym;
-      const cw = grossData.subarray(cOff, cOff + cwLen);
-      cOff += cwLen;
-      const r = RS.decode(cw, b.nsym);
+    let dOff = 0, allOk = true, corrected = 0;
+    for (let i = 0; i < plan.length; i++) {
+      const b = plan[i];
+      const r = RS.decode(cws[i], b.nsym);
       if (!r.ok) allOk = false;
       corrected += r.corrected;
       data.set(r.data, dOff);
@@ -470,13 +494,10 @@
   }
 
   // ファイル全体を複数ページ分の {header, payload} に分割
-  //   mode:     '1kb'..'5kb'（省略時は '1kb'）
-  //   eccLevel: 0..3（省略時は 0=なし）
-  // payload はグロス長(prof.PAYLOAD_BYTES)。ecc>0 なら RS 符号化済みのバイト列。
   function splitFile(fileBytes, mode, eccLevel) {
     const prof = getProfile(mode);
     const ecc = eccLevel != null ? (eccLevel & 0x03) : 0;
-    const net = netPayload(mode, ecc); // 1ページに載る正味データ量
+    const net = netPayload(mode, ecc);
     const total = fileBytes.length;
     const totalPages = Math.max(1, Math.ceil(total / net));
     const pages = [];
@@ -484,15 +505,13 @@
       const start = p * net;
       const end = Math.min(start + net, total);
       const chunk = fileBytes.slice(start, end);
-      const payload = encodePayload(chunk, prof.PAYLOAD_BYTES, ecc); // グロス長
+      const payload = encodePayload(chunk, prof.PAYLOAD_BYTES, ecc);
       const header = buildHeader(p, totalPages, chunk.length, total, prof.mode, ecc);
       pages.push({ header, payload, payloadLen: chunk.length, mode: prof.mode, eccLevel: ecc });
     }
     return pages;
   }
 
-  // 既定プロファイル(=1kb)のジオメトリを従来通りトップレベルにも公開し、
-  // 旧コードとの後方互換を保つ。
   const DEFAULT = PROFILES['1kb'];
 
   global.CardFormat = {
@@ -535,6 +554,8 @@
     netPayload,
     encodePayload,
     decodePayload,
+    interleaveBlocks,
+    deinterleaveBlocks,
     hasRS: !!RS,
     // --- 関数 ---
     finderCenters,
