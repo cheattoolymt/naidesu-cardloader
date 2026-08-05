@@ -80,7 +80,7 @@ const lerp=(a,b,f)=>({x:a.x+(b.x-a.x)*f,y:a.y+(b.y-a.y)*f});
 
 function autoDetect(img){
   const {data,width:w,height:h}=img;
-  const scale=Math.max(1,Math.round(Math.max(w,h)/800));
+  const scale=Math.max(1,Math.round(Math.max(w,h)/1400));
   const sw=Math.floor(w/scale),sh=Math.floor(h/scale);const gray=new Uint8Array(sw*sh);
   for(let y=0;y<sh;y++)for(let x=0;x<sw;x++){const px=(y*scale*w+x*scale)*4;
     gray[y*sw+x]=data[px]*0.299+data[px+1]*0.587+data[px+2]*0.114;}
