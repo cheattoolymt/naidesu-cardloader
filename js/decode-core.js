@@ -131,15 +131,17 @@
   }
 
   // セルサンプリング: 射影変換(斜め補正) + 適応窓平均で 0/1 グリッドを得る。
+  // opt.rowLimit を与えると先頭 rowLimit 行だけをサンプリングする(ヘッダ試し読み用の高速パス)。
   function sampleGrid(img, corners, prof, opt) {
     opt = opt || {};
     const invert = !!opt.invert;
     const w = img.width, h = img.height;
+    const rowsToScan = opt.rowLimit != null ? Math.min(opt.rowLimit, prof.ROWS) : prof.ROWS;
     const bits = new Uint8Array(prof.COLS * prof.ROWS);
     const mapper = GEO.makeCellMapper(corners, prof.COLS, prof.ROWS);
     const span = mapper.cellSpanPx();
     const rad = GEO.samplingRadius(span);
-    for (let r = 0; r < prof.ROWS; r++) {
+    for (let r = 0; r < rowsToScan; r++) {
       for (let c = 0; c < prof.COLS; c++) {
         const pt = mapper.map(c, r);
         let acc = 0, cnt = 0;
@@ -160,22 +162,35 @@
   }
 
   // 全モードで試し読み → MAGIC+checksum+modeID一致を採用 → 本文 RS デコード。
+  //
+  // 高速化(v7): ヘッダは各モードのグリッド先頭 HEADER_ROWS 行にしか無いため、
+  // まず「ヘッダ行だけ」を各モードでサンプリングして自己整合モードを絞り込み、
+  // 確定したモードでのみ全面サンプリング+本文 RS デコードを行う。
+  // これにより全モードを毎回フル解像度でサンプリングする無駄を排除する
+  // (モード数が 10 に増えても検出コストがほぼ一定に保たれる)。
   function decodeAnyMode(img, corners, opt) {
+    opt = opt || {};
     let lastMeta = null;
+    let matched = null;
     for (const mode of CF.MODES) {
       const prof = CF.getProfile(mode);
-      const bits = sampleGrid(img, corners, prof, opt);
-      const { header, payload } = CF.bitGridToBytes(bits, prof);
+      // ヘッダ行だけを試し読み(安全のため +1 行の余裕を持たせる)
+      const headBits = sampleGrid(img, corners, prof, Object.assign({}, opt, { rowLimit: prof.HEADER_ROWS + 1 }));
+      const { header } = CF.bitGridToBytes(headBits, prof);
       const meta = CF.parseHeader(header);
       if (!meta) continue;
       lastMeta = meta;
       if (!meta.checksumOk) continue;
-      if (meta.mode === mode) {
-        const dec = CF.decodePayload(payload, meta.eccLevel, meta.payloadLen);
-        return { meta, payload, prof, dec };
-      }
+      if (meta.mode === mode) { matched = { mode, prof, meta }; break; }
     }
-    return { meta: lastMeta, payload: null, prof: null, dec: null };
+    if (!matched) return { meta: lastMeta, payload: null, prof: null, dec: null };
+    // 確定モードで全面サンプリング → 本文 RS デコード
+    const { prof, meta } = matched;
+    const bits = sampleGrid(img, corners, prof, opt);
+    const { header, payload } = CF.bitGridToBytes(bits, prof);
+    const fullMeta = CF.parseHeader(header) || meta;
+    const dec = CF.decodePayload(payload, fullMeta.eccLevel, fullMeta.payloadLen);
+    return { meta: fullMeta, payload, prof, dec };
   }
 
   global.NaidesuDecodeCore = {

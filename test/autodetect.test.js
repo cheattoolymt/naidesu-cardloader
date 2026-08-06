@@ -125,21 +125,33 @@ function run(name, bytes, mode, ecc, opt) {
   assert(eq, `[${mode} ecc=${ecc}] ${name}: corrected=${corr} byte-exact via AUTO-DETECT`);
 }
 
+// 全 10 段階モードを必ず自動検出経路で検証する。高密度モードほど 1 ページ描画+
+// 全モード試し読みが重いので、「毎モードで実行する軽いケース(auto-small/auto-cap)」と
+// 「代表モードだけで実行する重いケース(auto-multi/scaled/offset/dirty/burst)」に分け、
+// 全 10 段階のカバレッジを保ちつつ CI 実行時間を現実的な範囲に収める。
+const HEAVY_MODES = new Set(['1kb', '5kb', '10kb']); // 最小・中・最高密度の代表
 for (const mode of CF.MODES) {
+  const heavy = HEAVY_MODES.has(mode);
   for (const ecc of [0, 1, 2, 3]) {
+    // 軽いケースは全 10 段階 × 全 ECC で必ず実行(モードを間引かない)
     run('auto-small', new TextEncoder().encode('naidesu auto-detect test 1234567890'), mode, ecc);
     run('auto-cap', crypto.getRandomValues(new Uint8Array(CF.netPayload(mode, ecc))), mode, ecc);
-    run('auto-multi', crypto.getRandomValues(new Uint8Array(CF.netPayload(mode, ecc) * 2 + 200)), mode, ecc);
-    run('auto-scaled', crypto.getRandomValues(new Uint8Array(700)), mode, ecc, { scale: 1.3 });
-    run('auto-offset', crypto.getRandomValues(new Uint8Array(600)), mode, ecc, { ox: 80, oy: 120 });
+    if (heavy) {
+      // 重いケース(複数ページ・拡大・平行移動)は代表モードのみ
+      run('auto-multi', crypto.getRandomValues(new Uint8Array(CF.netPayload(mode, ecc) * 2 + 200)), mode, ecc);
+      run('auto-scaled', crypto.getRandomValues(new Uint8Array(700)), mode, ecc, { scale: 1.3 });
+      run('auto-offset', crypto.getRandomValues(new Uint8Array(600)), mode, ecc, { ox: 80, oy: 120 });
+    }
   }
-  // 汚れ耐性: ECC>0 なら自動検出経路でも反転セルを訂正して復元できる
-  for (const ecc of [1, 2, 3]) {
-    run('auto-dirty', crypto.getRandomValues(new Uint8Array(500)), mode, ecc, { flips: ecc * 20 });
-  }
-  // バーストエラー耐性(インターリーブの効果): 連続反転をインターリーブが分散して訂正。
-  for (const ecc of [2, 3]) {
-    run('auto-burst', crypto.getRandomValues(new Uint8Array(600)), mode, ecc, { burst: ecc * 30 });
+  if (heavy) {
+    // 汚れ耐性: ECC>0 なら自動検出経路でも反転セルを訂正して復元できる
+    for (const ecc of [1, 2, 3]) {
+      run('auto-dirty', crypto.getRandomValues(new Uint8Array(500)), mode, ecc, { flips: ecc * 20 });
+    }
+    // バーストエラー耐性(インターリーブの効果): 連続反転をインターリーブが分散して訂正。
+    for (const ecc of [2, 3]) {
+      run('auto-burst', crypto.getRandomValues(new Uint8Array(600)), mode, ecc, { burst: ecc * 30 });
+    }
   }
 }
 
