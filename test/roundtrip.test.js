@@ -166,29 +166,29 @@ for (const mode of CF.MODES) {
 assert(CF.getProfile('5kb').PAYLOAD_BYTES >= 5120,
   `[5kb] gross ${CF.getProfile('5kb').PAYLOAD_BYTES}B >= 5120B (5KB以上)`);
 
-// 高密度モードの要件検証（6KB以上、目標7〜10KB。8kb は 9KB狙い）
-assert(CF.getProfile('6kb').PAYLOAD_BYTES >= 6144,
-  `[6kb] gross ${CF.getProfile('6kb').PAYLOAD_BYTES}B >= 6144B (6KB以上)`);
-assert(CF.getProfile('7kb').PAYLOAD_BYTES >= 7168,
-  `[7kb] gross ${CF.getProfile('7kb').PAYLOAD_BYTES}B >= 7168B (7KB以上)`);
-// v5: 8kb は余白削減で 9KB 近くまで拡大(目標 9〜10KB)。マスは縮めていない。
-assert(CF.getProfile('8kb').PAYLOAD_BYTES >= 9216 - 64,
-  `[8kb] gross ${CF.getProfile('8kb').PAYLOAD_BYTES}B ≈ 9KB (最高密度・目標9〜10KB)`);
-// 「5〜8KB のマスを縮めすぎない」要件: 5kb は 1mm 以上を維持する
+// 高密度モードの要件検証。v6: モード名を実容量に合わせて是正。
+assert(CF.getProfile('7kb').PAYLOAD_BYTES >= 6144,
+  `[7kb] gross ${CF.getProfile('7kb').PAYLOAD_BYTES}B >= 6144B`);
+assert(CF.getProfile('8kb').PAYLOAD_BYTES >= 7680,
+  `[8kb] gross ${CF.getProfile('8kb').PAYLOAD_BYTES}B >= 7680B`);
+// v6: 10kb モードは 1マス 0.7〜1mm を外れず 10KB(10240B) 以上を達成(目標)。
+assert(CF.getProfile('10kb').PAYLOAD_BYTES >= 10240,
+  `[10kb] gross ${CF.getProfile('10kb').PAYLOAD_BYTES}B >= 10240B (10KB以上を達成)`);
+// 「5〜10KB のマスを縮めすぎない」要件: 5kb は 1mm 以上を維持する
 const cell5mm = CF.getProfile('5kb').CELL_W / CF.DPI * 25.4;
 assert(cell5mm >= 1.00,
   `[5kb] cell ${cell5mm.toFixed(3)}mm >= 1.00mm (1mm以上を維持)`);
-// 最高密度でも 1セル >= 0.78mm を確保(300dpiで読めるサイズ)
-const cell8mm = CF.getProfile('8kb').CELL_W / CF.DPI * 25.4;
-assert(cell8mm >= 0.78,
-  `[8kb] cell ${cell8mm.toFixed(3)}mm >= 0.78mm (300dpiで読めるサイズを維持)`);
-// v5: すべての高密度モードが v4 のグロス容量を上回る(=無駄の除去で増量)
-assert(CF.getProfile('5kb').PAYLOAD_BYTES > 5376,
-  `[5kb] gross ${CF.getProfile('5kb').PAYLOAD_BYTES}B > 5376B (v4比で増量)`);
-// 余白削減で A4 面積の 72% 超をデータに使えていること
+// 最高密度の 10kb でも 1セルが 0.7〜1mm の範囲内(=0.7mm以上)であること
+const cell10mm = CF.getProfile('10kb').CELL_W / CF.DPI * 25.4;
+assert(cell10mm >= 0.70 && cell10mm <= 1.00,
+  `[10kb] cell ${cell10mm.toFixed(3)}mm は 0.7〜1mm の範囲内(要件)`);
+// 名称是正の確認: 旧「7kb(=8082B)」表記の実容量が 8kb モードに載っていること
+assert(CF.getProfile('8kb').PAYLOAD_BYTES >= 8000,
+  `[8kb] gross ${CF.getProfile('8kb').PAYLOAD_BYTES}B ≈ 8KB (名称と実容量が一致)`);
+// 余白削減で A4 面積の 76% 超をデータに使えていること
 const areaPct = 100 * CF.GRID_W * CF.GRID_H / (CF.PAGE_W * CF.PAGE_H);
-assert(areaPct >= 72,
-  `[layout] グリッド面積率 ${areaPct.toFixed(1)}% >= 72% (余白削減で紙を使い切る)`);
+assert(areaPct >= 76,
+  `[layout] グリッド面積率 ${areaPct.toFixed(1)}% >= 76% (余白削減で紙を使い切る)`);
 
 console.log('\nGeometry:');
 console.log('  PAGE', CF.PAGE_W, 'x', CF.PAGE_H, '@300dpi');

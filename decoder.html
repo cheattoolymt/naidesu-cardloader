@@ -8,6 +8,8 @@
 <script src="js/vendor/pako.min.js"></script>
 <script src="js/reed-solomon.js"></script>
 <script src="js/card-format.js"></script>
+<script src="js/geometry.js"></script>
+<script src="js/decode-core.js"></script>
 <script src="js/compress.js"></script>
 <style>
   :root { --accent:#2563eb; --ok:#16a34a; --warn:#f59e0b; --bad:#dc2626; --bg:#0f172a; --card:#1e293b; --line:#334155; }
@@ -43,8 +45,9 @@
   <h1>🔍 naidesu-cardloader — 読み取り</h1>
   <div class="sub">
     印刷したカードのスキャン画像(300dpi程度)/写真/PDF を読み込み、バイナリに復元します。
-    1KB〜5KB のモード・誤り訂正(ECC)レベルは<b>自動判別</b>し、汚れ・かすれで読み違えたマスは<b>誤り訂正で自動復元</b>します。
-    四隅の黒い■を自動検出 → ズレていれば赤い枠の角をドラッグして合わせます。
+    1KB〜10KB のモード・誤り訂正(ECC)レベルは<b>自動判別</b>し、汚れ・かすれ・折れで読み違えたマスは
+    <b>インターリーブ＋誤り訂正で自動復元</b>します。四隅の黒い■を自動検出 → ズレていれば赤い枠の角をドラッグして合わせます。
+    スマホの斜め撮影は<b>射影変換で自動補正</b>します。
     <a class="homelink" href="creator.html">→ 作成(Creator)へ</a>
   </div>
 
@@ -80,6 +83,8 @@
 
 <script>
 const CF = window.CardFormat;
+const GEO = window.NaidesuGeometry;
+const DC = window.NaidesuDecodeCore;
 const pdfjsLib = window['pdfjsLib'] || window['pdfjs-dist/build/pdf'];
 if (pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc =
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -160,19 +165,22 @@ function redraw() {
   view.width = src.width; view.height = src.height;
   vctx.drawImage(src, 0, 0);
   if (!corners) return;
-  // グリッド線（赤）
+  // グリッド線（赤）。射影変換(ホモグラフィ)で (u,v)→画像座標に写して描くので、
+  // 斜め撮影で台形に歪んでいても線がデータ枠に沿う。
+  const H = GEO.computeHomography(corners);
+  const mapUV = (u, v) => H ? GEO.applyHomography(H, u, v) : GEO.bilinearMap(corners, u, v);
   vctx.strokeStyle = 'rgba(255,0,0,0.7)';
   vctx.lineWidth = Math.max(1, src.width / 1000);
-  const step = 8; // 8セルごとに線（見やすさ優先）
-  for (let r = 0; r <= CF.ROWS; r += step) {
-    const L = lerp(corners[0], corners[3], r / CF.ROWS);
-    const R = lerp(corners[1], corners[2], r / CF.ROWS);
-    line(L, R);
+  // グリッド線は表示目安（実サンプリングは各モードの profile で行う）。
+  // モードは解析時まで未確定なので、u,v を等間隔(1/16)で引いて枠内を目安表示する。
+  const stepR = 1 / 16, stepC = 1 / 16;
+  for (let t = 0; t <= 1.0001; t += stepR) {
+    const v = Math.min(t, 1);
+    line(mapUV(0, v), mapUV(1, v));
   }
-  for (let c = 0; c <= CF.COLS; c += step) {
-    const T = lerp(corners[0], corners[1], c / CF.COLS);
-    const B = lerp(corners[3], corners[2], c / CF.COLS);
-    line(T, B);
+  for (let t = 0; t <= 1.0001; t += stepC) {
+    const u = Math.min(t, 1);
+    line(mapUV(u, 0), mapUV(u, 1));
   }
   // 外枠を強調
   vctx.lineWidth = Math.max(2, src.width / 500);
@@ -194,40 +202,24 @@ function line(a, b) { vctx.beginPath(); vctx.moveTo(a.x, a.y); vctx.lineTo(b.x, 
 function lerp(p1, p2, f) { return { x: p1.x + (p2.x - p1.x) * f, y: p1.y + (p2.y - p1.y) * f }; }
 
 /* ============ 自動検出（四隅ファインダ） ============ */
-// 手順: グレースケール→大津の閾値で二値化→四象限それぞれで最も外側の黒塊の重心を探す。
-// 歪みは無い前提なので、四象限の「最も角に近い黒画素の塊」を採用する。
+// 検出・サンプリング・デコードの中核は js/decode-core.js に集約(DOM 非依存)。
+// ここでは現在の src canvas のピクセルを ImageData として渡すだけ。
+function currentImage() {
+  const id = sctx.getImageData(0, 0, src.width, src.height);
+  return { data: id.data, width: src.width, height: src.height };
+}
+function currentOpt() {
+  return { invert: document.getElementById('invert').checked };
+}
+
+// 手順: グレースケール→大津の閾値で二値化→連結成分で四隅ファインダの重心→
+//       ファインダ中心からデータグリッド四隅へ補正(斜めでも各辺で補正)。
 function autoDetect() {
-  const w = src.width, h = src.height;
-  const data = sctx.getImageData(0, 0, w, h).data;
-  const invert = document.getElementById('invert').checked;
-
-  // ダウンサンプルして高速化。ただし高密度モード(8kb=約9.3pxセル)でも
-  // ファインダ中心を十分な精度で拾えるよう、目標を 1400px 相当に上げる
-  // (粗すぎると中心の量子化誤差でセルサンプリング点がセル外に落ち、
-  //  最縁のマスを読み違えて ECC 訂正能力を超えることがある)。
-  const scale = Math.max(1, Math.round(Math.max(w, h) / 1400));
-  const sw = Math.floor(w / scale), sh = Math.floor(h / scale);
-  const gray = new Uint8Array(sw * sh);
-  let sum = 0;
-  for (let y = 0; y < sh; y++) {
-    for (let x = 0; x < sw; x++) {
-      const px = (y * scale * w + x * scale) * 4;
-      let g = (data[px] * 0.299 + data[px + 1] * 0.587 + data[px + 2] * 0.114);
-      if (invert) g = 255 - g;
-      gray[y * sw + x] = g;
-      sum += g;
-    }
-  }
-  const thr = CF.otsuThreshold(gray);
-  // 黒(=1) マスク
-  const bin = new Uint8Array(sw * sh);
-  for (let i = 0; i < gray.length; i++) bin[i] = gray[i] <= thr ? 1 : 0;
-
-  // 四隅探索: 各コーナー方向で「角からの距離 * を最小化する黒画素塊」を探す。
-  const found = findFinders(bin, sw, sh);
+  const img = currentImage();
+  const found = DC.detectCorners(img, currentOpt());
   if (!found) {
     setStatus('自動検出できませんでした。赤枠の角を手で合わせてください。', 'bad');
-    // フォールバック: 画像に対する既定比率
+    const w = src.width, h = src.height;
     corners = [
       { x: w * 0.10, y: h * 0.08 }, { x: w * 0.90, y: h * 0.08 },
       { x: w * 0.90, y: h * 0.86 }, { x: w * 0.10, y: h * 0.86 },
@@ -235,159 +227,20 @@ function autoDetect() {
     redraw();
     return;
   }
-  // found は縮小座標。元座標へ戻す。
-  corners = found.map(p => ({ x: p.x * scale, y: p.y * scale }));
-  // ファインダ中心 -> データグリッド四隅 へ内側補正
-  corners = finderToGrid(corners);
-  setStatus('四隅を自動検出しました。ズレていれば角をドラッグして調整してください。', 'ok');
+  corners = found;
+  setStatus('四隅を自動検出しました。ズレていれば角をドラッグして調整してください。（斜め撮影は射影変換で自動補正）', 'ok');
   redraw();
-}
-
-// 連結成分ラベリングで塊を抽出し、四隅に最も近い大きな塊の重心を返す
-function findFinders(bin, w, h) {
-  const labels = new Int32Array(w * h).fill(0);
-  let next = 1;
-  const comps = []; // {n, cx, cy, minx,miny,maxx,maxy}
-  const stack = [];
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const idx = y * w + x;
-      if (bin[idx] !== 1 || labels[idx] !== 0) continue;
-      const id = next++;
-      let n = 0, sx = 0, sy = 0, minx = x, miny = y, maxx = x, maxy = y;
-      stack.length = 0; stack.push(idx); labels[idx] = id;
-      while (stack.length) {
-        const p = stack.pop();
-        const px = p % w, py = (p / w) | 0;
-        n++; sx += px; sy += py;
-        if (px < minx) minx = px; if (px > maxx) maxx = px;
-        if (py < miny) miny = py; if (py > maxy) maxy = py;
-        // 4近傍
-        if (px > 0 && bin[p-1]===1 && labels[p-1]===0){labels[p-1]=id;stack.push(p-1);}
-        if (px < w-1 && bin[p+1]===1 && labels[p+1]===0){labels[p+1]=id;stack.push(p+1);}
-        if (py > 0 && bin[p-w]===1 && labels[p-w]===0){labels[p-w]=id;stack.push(p-w);}
-        if (py < h-1 && bin[p+w]===1 && labels[p+w]===0){labels[p+w]=id;stack.push(p+w);}
-      }
-      comps.push({ n, cx: sx / n, cy: sy / n, minx, miny, maxx, maxy });
-    }
-  }
-  if (comps.length < 4) return null;
-
-  // ファインダらしさ: そこそこ大きい & 概ね正方形。データセルの塊は小さいので除外。
-  const area = w * h;
-  const cand = comps.filter(c => {
-    const bw = c.maxx - c.minx + 1, bh = c.maxy - c.miny + 1;
-    const ar = bw / bh;
-    const fill = c.n / (bw * bh);
-    return c.n > area * 0.0006 && c.n < area * 0.05 && ar > 0.5 && ar < 2.0 && fill > 0.45;
-  });
-  const pool = cand.length >= 4 ? cand : comps;
-
-  // 各コーナーに最も近い候補を1つずつ選ぶ
-  const cornersRef = [
-    { x: 0, y: 0 }, { x: w, y: 0 }, { x: w, y: h }, { x: 0, y: h },
-  ];
-  const chosen = [];
-  const used = new Set();
-  for (const cr of cornersRef) {
-    let best = null, bestD = Infinity, bestI = -1;
-    pool.forEach((c, i) => {
-      if (used.has(i)) return;
-      const d = (c.cx - cr.x) ** 2 + (c.cy - cr.y) ** 2;
-      if (d < bestD) { bestD = d; best = c; bestI = i; }
-    });
-    if (!best) return null;
-    used.add(bestI);
-    chosen.push({ x: best.cx, y: best.cy });
-  }
-  return chosen; // TL,TR,BR,BL のファインダ中心
-}
-
-// ファインダ中心座標 -> データグリッド四隅
-// 生成側の幾何(FINDER,GAP,GRID)から、ファインダ中心とグリッド角の相対関係を用いて補正。
-function finderToGrid(fc) {
-  // 生成側: グリッド角(GX,GY) と ファインダ中心 の px オフセット
-  const offX = CF.GAP + CF.FINDER / 2; // グリッド左端から左ファインダ中心までの距離(左向き)
-  const offY = CF.GAP + CF.FINDER / 2;
-  // ファインダ中心の張る矩形の幅・高さ = グリッド幅 + 2*offX 相当
-  // 実測ファインダ中心からグリッド角へ内側方向に補正する比率を計算
-  const fW = ((fc[1].x - fc[0].x) + (fc[2].x - fc[3].x)) / 2; // 上下平均のファインダ間X
-  const fH = ((fc[3].y - fc[0].y) + (fc[2].y - fc[1].y)) / 2;
-  const gridSpanFinderX = CF.GRID_W + 2 * offX;
-  const gridSpanFinderY = CF.GRID_H + 2 * offY;
-  const rx = fW / gridSpanFinderX; // px(実) / px(理論)
-  const ry = fH / gridSpanFinderY;
-  const dx = offX * rx, dy = offY * ry;
-  return [
-    { x: fc[0].x + dx, y: fc[0].y + dy }, // TL
-    { x: fc[1].x - dx, y: fc[1].y + dy }, // TR
-    { x: fc[2].x - dx, y: fc[2].y - dy }, // BR
-    { x: fc[3].x + dx, y: fc[3].y - dy }, // BL
-  ];
 }
 
 document.getElementById('autoBtn').onclick = autoDetect;
 document.getElementById('invert').onchange = () => { if (hasImage) autoDetect(); };
 
 /* ============ セル読み取り & デコード ============ */
-// 指定プロファイル(グリッド密度)で四隅からセルをサンプリングして bit グリッドを得る。
-function sampleGrid(prof) {
-  const data = sctx.getImageData(0, 0, src.width, src.height).data;
-  const w = src.width;
-  const invert = document.getElementById('invert').checked;
-  const bits = new Uint8Array(prof.COLS * prof.ROWS);
-
-  // 各セル中心付近を 3x3 平均でサンプリング(ノイズ耐性)
-  for (let r = 0; r < prof.ROWS; r++) {
-    for (let c = 0; c < prof.COLS; c++) {
-      const T = lerp(corners[0], corners[1], (c + 0.5) / prof.COLS);
-      const B = lerp(corners[3], corners[2], (c + 0.5) / prof.COLS);
-      const pt = lerp(T, B, (r + 0.5) / prof.ROWS);
-      let acc = 0, cnt = 0;
-      for (let oy = -1; oy <= 1; oy++) {
-        for (let ox = -1; ox <= 1; ox++) {
-          const xx = Math.round(pt.x + ox), yy = Math.round(pt.y + oy);
-          if (xx < 0 || yy < 0 || xx >= src.width || yy >= src.height) continue;
-          const p = (yy * w + xx) * 4;
-          let g = data[p] * 0.299 + data[p+1] * 0.587 + data[p+2] * 0.114;
-          if (invert) g = 255 - g;
-          acc += g; cnt++;
-        }
-      }
-      const avg = cnt ? acc / cnt : 255;
-      bits[r * prof.COLS + c] = avg < 128 ? 1 : 0; // 黒=1
-    }
-  }
-  return bits;
-}
-
-// デコーダはモード/ECCレベルを事前に知らないため、全モードのグリッドで試し読みし、
-// MAGIC + (RS訂正済み)チェックサムが通り、かつヘッダ内モードIDと一致した結果を採用する。
-// さらにヘッダから得た eccLevel で本文(グロス領域)を RS デコードして誤りを訂正する。
-function decodeAnyMode() {
-  let lastMeta = null;
-  for (const mode of CF.MODES) {
-    const prof = CF.getProfile(mode);
-    const bits = sampleGrid(prof);
-    const { header, payload } = CF.bitGridToBytes(bits, prof);
-    const meta = CF.parseHeader(header);
-    if (!meta) continue;
-    lastMeta = meta;
-    if (!meta.checksumOk) continue;
-    // ヘッダのモードIDが、このグリッドのモードと一致していれば確定。
-    if (meta.mode === mode) {
-      // 本文を ECC で誤り訂正して正味データを取り出す
-      const dec = CF.decodePayload(payload, meta.eccLevel, meta.payloadLen);
-      return { meta, payload, prof, dec };
-    }
-  }
-  return { meta: lastMeta, payload: null, prof: null, dec: null };
-}
-
+// 射影変換(斜め補正)+適応サンプリング窓+全モード試し読みは decode-core.js。
 document.getElementById('decodeBtn').onclick = () => {
   if (!corners) { setStatus('先に四隅を合わせてください', 'bad'); return; }
 
-  const { meta, payload, prof, dec } = decodeAnyMode();
+  const { meta, payload, prof, dec } = DC.decodeAnyMode(currentImage(), corners, currentOpt());
   if (!meta) {
     setStatus('ヘッダを認識できませんでした。グリッドを合わせ直してください（MAGIC不一致）。', 'bad');
     return;
