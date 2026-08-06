@@ -22,10 +22,21 @@
  *   さらに 1セル 0.75mm(0.7〜1mm の範囲内)の「10kb モード」を追加し、
  *   1 枚 10527 byte(≈10.3KB) を達成した(目標: 一マス 0.7〜1mm を外れず 10KB 以上)。
  *
- * ● モード名を実容量に合わせて是正 (v6) -----------------------------
- *   旧版は「7kb モードと言いつつ実際は 8082B(≈8KB)」「8kb と言いつつ 9209B(≈9KB)」と
- *   表示と実容量がズレていた。v6 ではモード名(=キー)を実グロス容量の KB に合わせ、
- *   1kb/2kb/3kb/4kb/5kb/7kb/8kb/10kb の 8モードとした(6kb/9kb は廃し、実容量に近い KB 名へ)。
+ * ● KB は 1024 倍(=KiB)基準に統一 (v7) -----------------------------
+ *   旧版は「KB」を 1000 倍と 1024 倍で混用し、テストの assert 値もモード番号と
+ *   ズレて矛盾していた。v7 では **KB = 1024 byte(=真の KiB)** に統一し、
+ *   各 "Nkb" モードのグロス容量が必ず N*1024 byte 以上になるよう cols/rows を再設計した。
+ *
+ * ● 全 10 段階を揃える (v7) -----------------------------------------
+ *   旧版は理由なく 6kb/9kb を間引いて 8 モードだけだった。v7 では
+ *   1,2,3,4,5,6,7,8,9,10kb の **全 10 段階**を、いずれもセルをほぼ正方形に保ちつつ
+ *   1024 倍基準の名目容量以上を満たすように再設計した(下表)。
+ *
+ * ● ヘッダ行の余りビットを payload に活用 (v7 で確定) ----------------
+ *   ヘッダは論理 12byte を RS 保護した 18byte(=144bit)。ヘッダ行は cols の切り上げで
+ *   144bit を超える端数(HEADER_PAD_BITS)を持つが、これを捨てず payload に回す。
+ *   payload の書き込み開始位置を「グリッド全ビット中の 144bit 目」に固定することで、
+ *   ヘッダ行の余りセルもデータに使い切る(PAYLOAD_BYTES に加算済み)。
  *
  * ● インターリーブ(バーストエラー耐性) -----------------------------
  *   スキャンの折れ・かすれ・帯状ノイズは「連続した領域のセル」をまとめて壊す
@@ -33,17 +44,20 @@
  *   QR コードと同じく **複数 RS ブロックの符号語をバイト単位で交互配置(インターリーブ)** し、
  *   バースト誤りを複数ブロックへ分散させて各ブロックの誤り数を減らす。
  *
- * ● 密度モード ------------------------------------------------------
+ * ● 密度モード (KB=1024 倍基準・全 10 段階) --------------------------
  *   セルは「300dpi でも余裕で読める」よう十分な大きさを確保する。5kb は
- *   1mm 以上を維持し、10kb でも 0.75mm(0.7〜1mm の下限側)に留める。
- *   "1kb" : 100 x 144 ->  1800 byte/枚 (cell ≈ 1.82mm)
- *   "2kb" : 118 x 170 ->  2507 byte/枚 (cell ≈ 1.54mm)
- *   "3kb" : 137 x 197 ->  3373 byte/枚 (cell ≈ 1.33mm)
- *   "4kb" : 157 x 226 ->  4435 byte/枚 (cell ≈ 1.16mm)
- *   "5kb" : 178 x 256 ->  5696 byte/枚 (cell ≈ 1.02mm) ← 1mm以上を維持
- *   "7kb" : 196 x 282 ->  6909 byte/枚 (cell ≈ 0.93mm)
- *   "8kb" : 212 x 305 ->  8082 byte/枚 (cell ≈ 0.86mm)
- *   "10kb": 242 x 348 -> 10527 byte/枚 (cell ≈ 0.75mm) ← 10KB超・0.7〜1mm の範囲内
+ *   1mm 以上を維持し、最高密度の 10kb でも 0.76mm(0.7〜1mm の範囲内)に留める。
+ *   グロス容量は必ず N*1024 byte 以上(=真の N KiB 以上)。
+ *   "1kb" :  77 x 109 ->  1031 byte/枚 (cell ≈ 2.37mm)  >= 1024
+ *   "2kb" : 108 x 154 ->  2061 byte/枚 (cell ≈ 1.69mm)  >= 2048
+ *   "3kb" : 132 x 188 ->  3084 byte/枚 (cell ≈ 1.38mm)  >= 3072
+ *   "4kb" : 152 x 217 ->  4105 byte/枚 (cell ≈ 1.20mm)  >= 4096
+ *   "5kb" : 170 x 242 ->  5124 byte/枚 (cell ≈ 1.07mm)  >= 5120  ← 1mm以上を維持
+ *   "6kb" : 186 x 266 ->  6166 byte/枚 (cell ≈ 0.98mm)  >= 6144
+ *   "7kb" : 200 x 288 ->  7182 byte/枚 (cell ≈ 0.91mm)  >= 7168
+ *   "8kb" : 214 x 307 ->  8194 byte/枚 (cell ≈ 0.85mm)  >= 8192
+ *   "9kb" : 227 x 326 ->  9232 byte/枚 (cell ≈ 0.80mm)  >= 9216
+ *   "10kb": 239 x 344 -> 10259 byte/枚 (cell ≈ 0.76mm)  >= 10240 ← 0.7〜1mm の範囲内
  *
  * ● 誤り訂正 (ECC) — 段階選択 --------------------------------------
  *   リードソロモン符号(js/reed-solomon.js)を被せ、汚れ耐性と正味容量の
@@ -105,34 +119,32 @@
   //   [7..10] totalFileLen (big-endian 32bit)
   //   [11]    checksum = XOR of bytes[0..10]
   //
-  // verModeEcc(=[2]) のビット割り当て(VERSION>=4):
-  //   bit0..2 : version (=4)
-  //   bit3..6 : modeId (0..15 の 16モードまで格納可)
-  //   bit7    : eccLevel の下位1bit
-  // eccLevel の上位1bit は [4](totalPages) ではなく、余りビットを使わず
-  // 論理ヘッダを 12byte に保つため、[2] だけでは 2bit 分の ECC を格納しきれない。
-  // → ECCレベルは 0..3 の 2bit 必要なので、bit7 と、pageIndex/totalPages を圧迫せずに
-  //   もう1bit を確保するため VERSION>=4 では [2] の bit7 = ecc bit0、
-  //   そして version 用 3bit のうち VERSION=4 は 0b100 なので bit2 が立つ。
-  // ややこしさを避けるため、実装では次の単純な割当を採用する:
-  //   [2] = (VERSION & 0x07) | ((modeId & 0x0F) << 3) | ((ecc & 0x01) << 7)
-  //   [11] のチェックサム後の未使用は無いが、ecc の bit1 は「ヘッダ行の余りビット」で
-  //   運ばず、pageIndex は 0..255 で 8bit フルに使うため、ecc bit1 は [2] に入れられない。
-  // → シンプルに: ecc(2bit) は modeId を 4bit に拡張したうえで [2] の bit7 に ecc&1、
-  //   ecc の bit1 は VERSION を 3bit のまま bit2 と衝突しないよう、[4] totalPages は
-  //   1..255 しか使わないので最上位ビットに載せられるが可読性が下がる。
-  // 実装は interpretLogical/buildHeaderLogical を正とする(下記参照)。
+  // verModeEcc(=[2]) のビット割り当て(VERSION=5):
+  //   bit0..1 : version (=5 の下位2bit = 0b01)  ※実質のバージョン識別は下記 interpretLogical 参照
+  //   bit2..5 : modeId (0..15 の 16モードまで格納可 → 全 10 段階を余裕で表現)
+  //   bit6..7 : eccLevel (0..3)
+  // v7 で全 10 段階(1..10kb)に増えたため modeId に 4bit 必要となり、
+  // version を 2bit・modeId を 4bit・ecc を 2bit の計 8bit にきれいに収めた。
+  //   [2] = (VERSION_TAG & 0x03) | ((modeId & 0x0F) << 2) | ((ecc & 0x03) << 6)
+  // 旧版(VERSION 3/4 の 3bit-version レイアウト)は interpretLogical で後方互換読取する。
   const MAGIC0 = 0x4e;
   const MAGIC1 = 0x43;
-  const VERSION = 4; // 4: modeId(16種)+ecc(2bit)。旧(1,2,3)は後方互換読取。
+  const VERSION = 5;      // v7 論理バージョン(表示・記録用)
+  const VERSION_TAG = 1;  // [2] bit0..1 に格納する 2bit タグ(=VERSION5 を表す 0b01)
   const HEADER_DATA_LEN = 12;      // 論理ヘッダのバイト数
   const HEADER_NSYM = 6;           // ヘッダ保護 RS のパリティ(最大3byte誤り訂正)
   const HEADER_LEN = HEADER_DATA_LEN + HEADER_NSYM; // 18
 
-  // モードID (0..7 の 3bit)。実グロス容量の KB に合わせた命名(v6で是正)。
-  // 8モードに収め、modeId を 3bit で表現する(ヘッダ h[2] の bit3..5)。
-  const MODE_ID = { '1kb': 0, '2kb': 1, '3kb': 2, '4kb': 3, '5kb': 4, '7kb': 5, '8kb': 6, '10kb': 7 };
-  const ID_MODE = { 0: '1kb', 1: '2kb', 2: '3kb', 3: '4kb', 4: '5kb', 5: '7kb', 6: '8kb', 7: '10kb' };
+  // モードID (0..9 を 4bit で表現)。KB=1024 倍基準の名目容量に合わせた命名(v7)。
+  // 全 10 段階(1〜10kb)を間引かず揃える。
+  const MODE_ID = {
+    '1kb': 0, '2kb': 1, '3kb': 2, '4kb': 3, '5kb': 4,
+    '6kb': 5, '7kb': 6, '8kb': 7, '9kb': 8, '10kb': 9,
+  };
+  const ID_MODE = {
+    0: '1kb', 1: '2kb', 2: '3kb', 3: '4kb', 4: '5kb',
+    5: '6kb', 6: '7kb', 7: '8kb', 8: '9kb', 9: '10kb',
+  };
 
   // ---- ECC (誤り訂正) レベル -----------------------------------
   const BLOCK_N = 255; // RS ブロック長(GF(256) 上限)
@@ -185,15 +197,18 @@
   }
 
   // 共通長方形(2152 x 3096)を細分する cols x rows。
+  // v7: KB=1024 倍基準で「グロス >= N*1024」を満たす全 10 段階。セルはほぼ正方形。
   const PROFILES = {
-    '1kb': makeProfile('1kb', 100, 144),
-    '2kb': makeProfile('2kb', 118, 170),
-    '3kb': makeProfile('3kb', 137, 197),
-    '4kb': makeProfile('4kb', 157, 226),
-    '5kb': makeProfile('5kb', 178, 256),
-    '7kb': makeProfile('7kb', 196, 282),
-    '8kb': makeProfile('8kb', 212, 305),
-    '10kb': makeProfile('10kb', 242, 348),
+    '1kb': makeProfile('1kb', 77, 109),
+    '2kb': makeProfile('2kb', 108, 154),
+    '3kb': makeProfile('3kb', 132, 188),
+    '4kb': makeProfile('4kb', 152, 217),
+    '5kb': makeProfile('5kb', 170, 242),
+    '6kb': makeProfile('6kb', 186, 266),
+    '7kb': makeProfile('7kb', 200, 288),
+    '8kb': makeProfile('8kb', 214, 307),
+    '9kb': makeProfile('9kb', 227, 326),
+    '10kb': makeProfile('10kb', 239, 344),
   };
   const MODES = Object.keys(PROFILES);
 
@@ -243,15 +258,15 @@
 
   // 論理ヘッダ(12byte)を組み立てる。
   // h[2](verModeEcc) の確定レイアウト(interpretLogical と厳密に一致):
-  //   bit0..2 = version(=4)   bit3..5 = modeId(0..7)   bit6..7 = eccLevel(0..3)
-  // modeId は 3bit(0..7)。将来 8モードを超える場合は VERSION を上げて再設計する。
+  //   bit0..1 = versionTag(=1 → VERSION5)   bit2..5 = modeId(0..15)   bit6..7 = eccLevel(0..3)
+  // modeId は 4bit(0..15)。全 10 段階(0..9)を余裕で表現できる。
   function buildHeaderLogical(pageIndex, totalPages, payloadLenThisPage, totalFileLen, mode, eccLevel) {
     const h = new Uint8Array(HEADER_DATA_LEN);
     const modeId = MODE_ID[mode] != null ? MODE_ID[mode] : 0;
     const ecc = eccLevel != null ? (eccLevel & 0x03) : 0;
     h[0] = MAGIC0;
     h[1] = MAGIC1;
-    h[2] = (VERSION & 0x07) | ((modeId & 0x07) << 3) | ((ecc & 0x03) << 6);
+    h[2] = (VERSION_TAG & 0x03) | ((modeId & 0x0f) << 2) | ((ecc & 0x03) << 6);
     h[3] = pageIndex & 0xff;
     h[4] = totalPages & 0xff;
     h[5] = (payloadLenThisPage >> 8) & 0xff;
@@ -278,16 +293,25 @@
   }
 
   // 論理ヘッダ(12byte)を解釈する。
+  // v7(VERSION5)は h[2] の bit0..1 = versionTag(1) で識別する。
+  // 旧版(bit0..2 が 3/4 の 3bit-version レイアウト)は後方互換で読取る。
   function interpretLogical(h, checksumOk) {
     const verByte = h[2];
-    let version = verByte & 0x07;
-    let modeId, ecc;
-    if (version >= 3) {
-      // VERSION 3/4 共通: bit3..5=modeId(0..7), bit6..7=ecc(0..3)
+    const tag2 = verByte & 0x03;
+    const ver3 = verByte & 0x07;
+    let version, modeId, ecc;
+    if (tag2 === VERSION_TAG && (ver3 < 3 || ver3 > 4)) {
+      // v7(VERSION5): bit0..1=tag(1), bit2..5=modeId(0..15), bit6..7=ecc(0..3)
+      version = VERSION;
+      modeId = (verByte >> 2) & 0x0f;
+      ecc = (verByte >> 6) & 0x03;
+    } else if (ver3 >= 3) {
+      // 旧 VERSION 3/4: bit3..5=modeId(0..7), bit6..7=ecc(0..3)
+      version = ver3;
       modeId = (verByte >> 3) & 0x07;
       ecc = (verByte >> 6) & 0x03;
     } else {
-      // 旧ヘッダ後方互換: version は下位4bit、modeIdは上位4bit、ECCなし。
+      // さらに旧いヘッダ後方互換: version は下位4bit、modeIdは上位4bit、ECCなし。
       version = verByte & 0x0f;
       modeId = version >= 2 ? (verByte >> 4) & 0x0f : 0;
       ecc = 0;

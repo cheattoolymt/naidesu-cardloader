@@ -6,9 +6,9 @@
  * セルサンプリング + 両/全モード試し読み)で復元し、byte-exact を検証する。
  *
  * ブラウザの browser-e2e.html を Node 上で再現したもので、
- * 特に最高密度の 5KB モード(1セル ≈ 0.93mm)が JPEG 圧縮を経ても 300dpi 相当で
+ * 特に最高密度の 10KB モード(1セル ≈ 0.76mm)が JPEG 圧縮を経ても 300dpi 相当で
  * 安定して読めること、および誤り訂正(ECC)で汚れ/圧縮ノイズを復元できることを
- * 確認するのが目的。
+ * 確認するのが目的。KB は 1024 倍(=KiB)基準。
  *
  * 依存: npm i canvas （テスト専用・本体アプリはブラウザ Canvas を使用）
  */
@@ -172,8 +172,8 @@ const crypto = require('crypto');
 const rand = (n) => new Uint8Array(crypto.randomBytes(n));
 
 (async () => {
-  // 全モードを実 JPEG(0.9) 経由で検証。特に最高密度の 5KB モード
-  // (1セル ≈ 0.93mm)が JPEG 圧縮を経ても 300dpi 相当で安定して読めること、
+  // 代表モードを実 JPEG(0.9) 経由で検証。特に最高密度の 10KB モード
+  // (1セル ≈ 0.76mm)が JPEG 圧縮を経ても 300dpi 相当で安定して読めること、
   // また誤り訂正(ECC)が JPEG のにじみ/圧縮ノイズを吸収できることを重点確認する。
   //
   // ※ セルサイズの読み取り安定性は「1ページ内の話」なので、ここでは
@@ -194,10 +194,10 @@ const rand = (n) => new Uint8Array(crypto.randomBytes(n));
   //    (JPEG のにじみ/圧縮ノイズを ECC が吸収することを確認)
   await runCase('5KB-ecc-med', rand(CF.netPayload('5kb', 2)), '5kb', 2, true); gc();
 
-  // 3) 【新設・最重要】最高密度 8KB(1セル 0.81mm)が JPEG(0.9) を経ても
-  //    ECC(中) 込みで byte-exact 復元できること。高密度化の妥当性を実証する。
-  await runCase('8KB-ecc-med', rand(CF.netPayload('8kb', 2)), '8kb', 2, true); gc();
-  //    6KB(旧5KBと同じ 0.94mm セル・6KB超) は ECC なしでも JPEG を通せること
+  // 3) 【最重要】最高密度 10KB(1セル ≈ 0.76mm)が JPEG(0.9) を経ても
+  //    ECC(中) 込みで byte-exact 復元できること。最高密度化の妥当性を実証する。
+  await runCase('10KB-ecc-med', rand(CF.netPayload('10kb', 2)), '10kb', 2, true); gc();
+  //    6KB(1セル ≈ 0.98mm) は ECC なしでも JPEG を通せること
   await runCase('6KB-cap', rand(CF.getProfile('6kb').PAYLOAD_BYTES), '6kb', 0, true); gc();
   await runCase('8KB-ecc-text', new TextEncoder().encode('naidesu 8KB + ECC E2E ✓ 日本語 0123456789'), '8kb', 2, true); gc();
 

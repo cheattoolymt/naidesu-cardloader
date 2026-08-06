@@ -47,7 +47,7 @@
   <div class="sub">
     バイナリ(どんなファイルでも) → A4/300dpi の「パンチカード」画像に変換して印刷します。<br>
     1ページの正味容量 <b id="capLbl"></b> バイト（誤り訂正のパリティを除いた分）。超える場合は自動で複数ページに分割します。<br>
-    最高密度の <b>10KB モード</b>は 1 枚 10.5KB 超（1マス 0.75mm＝0.7〜1mm の範囲内）。RS 誤り訂正＋インターリーブでバースト誤りにも強く、圧縮併用で実効数十KBが1枚に載ります。<br>
+    密度モードは <b>1KB〜10KB の全 10 段階</b>（KB＝1024 byte＝KiB 基準・各モードは名目容量以上を保証）。最高密度の <b>10KB モード</b>は 1 枚 10259 byte（1マス 約0.76mm＝0.7〜1mm の範囲内）。RS 誤り訂正＋インターリーブでバースト誤りにも強く、圧縮併用で実効数十KBが1枚に載ります。<br>
     <span id="eccLbl" style="color:#93c5fd"></span>
     <a class="homelink" href="decoder.html">→ 読み取り(Decoder)へ</a>
   </div>
@@ -59,14 +59,16 @@
       <div>
         <label>② 密度モード（1枚あたりのグロス容量）</label>
         <select id="mode">
-          <option value="1kb">1KB モード（100×144・約1.82mm・大きいマスで読み取り安定・推奨）</option>
-          <option value="2kb">2KB モード（118×170・約1.54mm・枚数を減らす）</option>
-          <option value="3kb">3KB モード（137×197・約1.33mm・高密度）</option>
-          <option value="4kb">4KB モード（157×226・約1.16mm・4KBファイルも1枚に集約）</option>
-          <option value="5kb">5KB モード（178×256・約1.02mm・マス1mm以上を維持・約5.7KB/枚）</option>
-          <option value="7kb">7KB モード（196×282・約0.93mm・約6.9KB/枚）</option>
-          <option value="8kb">8KB モード（212×305・約0.86mm・約8.1KB/枚）</option>
-          <option value="10kb">10KB モード（242×348・約0.75mm・最高密度・約10.5KB/枚・圧縮併用で数十KB相当）</option>
+          <option value="1kb">1KB モード（77×109・約2.37mm・大きいマスで読み取り安定・推奨）</option>
+          <option value="2kb">2KB モード（108×154・約1.69mm・枚数を減らす）</option>
+          <option value="3kb">3KB モード（132×188・約1.38mm・高密度）</option>
+          <option value="4kb">4KB モード（152×217・約1.20mm・4KBファイルも1枚に集約）</option>
+          <option value="5kb">5KB モード（170×242・約1.07mm・マス1mm以上を維持・5124B/枚）</option>
+          <option value="6kb">6KB モード（186×266・約0.98mm・6166B/枚）</option>
+          <option value="7kb">7KB モード（200×288・約0.91mm・7182B/枚）</option>
+          <option value="8kb">8KB モード（214×307・約0.85mm・8194B/枚）</option>
+          <option value="9kb">9KB モード（227×326・約0.80mm・9232B/枚）</option>
+          <option value="10kb">10KB モード（239×344・約0.76mm・最高密度・10259B/枚・圧縮併用で数十KB相当）</option>
         </select>
       </div>
       <div>

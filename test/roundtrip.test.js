@@ -5,7 +5,7 @@
  * の往復でバイナリが完全一致するか検証する。
  * ブラウザの Canvas を使わず、自前の簡易ラスタライザで検証する。
  *
- * 1KB(96x143) / 2KB(112x167) / 3KB(130x194) / 4KB(149x222) / 5KB(170x254) 各モードを、
+ * 全 10 段階モード(1kb〜10kb, KB=1024倍=KiB基準)を、
  * 誤り訂正(ECC) レベル 0..3 と組み合わせて検証する。
  * グリッドはページ全高を使う共通長方形の細分。
  */
@@ -162,18 +162,20 @@ for (const mode of CF.MODES) {
   }
 }
 
-// 5KB モードのグロス容量が 5120B(5KB) 以上あることを明示検証（要件: 5KB以上）
-assert(CF.getProfile('5kb').PAYLOAD_BYTES >= 5120,
-  `[5kb] gross ${CF.getProfile('5kb').PAYLOAD_BYTES}B >= 5120B (5KB以上)`);
+// ---- KB=1024倍(=KiB)基準の統一検証 --------------------------------
+// 全 10 段階(1..10kb)が「グロス >= N*1024 byte」を満たすこと(名目容量以上)。
+const KIB = 1024;
+for (let kb = 1; kb <= 10; kb++) {
+  const mode = `${kb}kb`;
+  const prof = CF.getProfile(mode);
+  assert(prof != null, `[${mode}] mode exists (全10段階を間引かず揃える)`);
+  assert(prof.PAYLOAD_BYTES >= kb * KIB,
+    `[${mode}] gross ${prof.PAYLOAD_BYTES}B >= ${kb * KIB}B (=${kb}KiB, 1024倍基準)`);
+}
+// 全 10 段階が MODES に揃っていること(順序も 1..10)
+assert(CF.MODES.length === 10 && CF.MODES.join(',') === '1kb,2kb,3kb,4kb,5kb,6kb,7kb,8kb,9kb,10kb',
+  `[modes] 全10段階が揃う: ${CF.MODES.join(',')}`);
 
-// 高密度モードの要件検証。v6: モード名を実容量に合わせて是正。
-assert(CF.getProfile('7kb').PAYLOAD_BYTES >= 6144,
-  `[7kb] gross ${CF.getProfile('7kb').PAYLOAD_BYTES}B >= 6144B`);
-assert(CF.getProfile('8kb').PAYLOAD_BYTES >= 7680,
-  `[8kb] gross ${CF.getProfile('8kb').PAYLOAD_BYTES}B >= 7680B`);
-// v6: 10kb モードは 1マス 0.7〜1mm を外れず 10KB(10240B) 以上を達成(目標)。
-assert(CF.getProfile('10kb').PAYLOAD_BYTES >= 10240,
-  `[10kb] gross ${CF.getProfile('10kb').PAYLOAD_BYTES}B >= 10240B (10KB以上を達成)`);
 // 「5〜10KB のマスを縮めすぎない」要件: 5kb は 1mm 以上を維持する
 const cell5mm = CF.getProfile('5kb').CELL_W / CF.DPI * 25.4;
 assert(cell5mm >= 1.00,
@@ -182,9 +184,21 @@ assert(cell5mm >= 1.00,
 const cell10mm = CF.getProfile('10kb').CELL_W / CF.DPI * 25.4;
 assert(cell10mm >= 0.70 && cell10mm <= 1.00,
   `[10kb] cell ${cell10mm.toFixed(3)}mm は 0.7〜1mm の範囲内(要件)`);
-// 名称是正の確認: 旧「7kb(=8082B)」表記の実容量が 8kb モードに載っていること
-assert(CF.getProfile('8kb').PAYLOAD_BYTES >= 8000,
-  `[8kb] gross ${CF.getProfile('8kb').PAYLOAD_BYTES}B ≈ 8KB (名称と実容量が一致)`);
+// セルサイズが密度の上昇に伴い単調に小さくなること(段階が破綻していない)
+let monoOk = true;
+for (let kb = 1; kb < 10; kb++) {
+  const a = CF.getProfile(`${kb}kb`).CELL_W, b = CF.getProfile(`${kb + 1}kb`).CELL_W;
+  if (!(a > b)) monoOk = false;
+}
+assert(monoOk, `[modes] セルサイズが 1kb→10kb で単調減少(段階が一貫)`);
+// ヘッダ行の余りビットが payload に使い切られていること(PAYLOAD_BYTES が理論最大と一致)
+let padOk = true;
+for (const mode of CF.MODES) {
+  const p = CF.getProfile(mode);
+  const theoretical = Math.floor((p.COLS * p.ROWS - CF.HEADER_LEN * 8) / 8);
+  if (p.PAYLOAD_BYTES !== theoretical) padOk = false;
+}
+assert(padOk, `[layout] ヘッダ行の余りビットも payload に活用(PAYLOAD_BYTES=理論最大)`);
 // 余白削減で A4 面積の 76% 超をデータに使えていること
 const areaPct = 100 * CF.GRID_W * CF.GRID_H / (CF.PAGE_W * CF.PAGE_H);
 assert(areaPct >= 76,
